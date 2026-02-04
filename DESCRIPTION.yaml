@@ -1,0 +1,16 @@
+name: idd-spatial-analysis
+version: 0.1.0
+description: Geospatial analysis tools for IDD research
+authors:
+  - name: Your Name
+    email: your.email@uw.edu
+license: MIT
+repository: https://github.com/ihmeuw/idd-spatial-analysis
+keywords:
+  - geospatial
+  - gis
+  - spatial-analysis
+  - geopandas
+  - climate
+  - epidemiology
+python_requires: ">=3.10"
