@@ -1,0 +1,64 @@
+<VRTDataset rasterXSize="32768" rasterYSize="16384">
+  <SRS dataAxisToSRSAxisMapping="1,2">PROJCS["World_Cylindrical_Equal_Area",GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563,AUTHORITY["EPSG","7030"]],AUTHORITY["EPSG","6326"]],PRIMEM["Greenwich",0],UNIT["Degree",0.0174532925199433]],PROJECTION["Cylindrical_Equal_Area"],PARAMETER["standard_parallel_1",0],PARAMETER["central_meridian",0],PARAMETER["false_easting",0],PARAMETER["false_northing",0],UNIT["metre",1,AUTHORITY["EPSG","9001"]],AXIS["Easting",EAST],AXIS["Northing",NORTH],AUTHORITY["ESRI","54034"]]</SRS>
+  <GeoTransform>  6.1768916600000001e+06,  1.0000000000000000e+02,  0.0000000000000000e+00,  3.9062853300000001e+06,  0.0000000000000000e+00, -1.0000000000000000e+02</GeoTransform>
+  <VRTRasterBand dataType="Float32" band="1">
+    <NoDataValue>nan</NoDataValue>
+    <ColorInterp>Gray</ColorInterp>
+    <ComplexSource>
+      <SourceFilename relativeToVRT="0">/mnt/share/geospatial/ihmepop/gbd_release_id_16/lsae_1285/sex_age_splits.20Nov2025/2023q1/sex_id_3_age_group_id_22/B-0032X-0003Y.tif</SourceFilename>
+      <SourceBand>1</SourceBand>
+      <SourceProperties RasterXSize="8192" RasterYSize="8192" DataType="Float32" BlockXSize="8192" BlockYSize="1" />
+      <SrcRect xOff="0" yOff="0" xSize="8192" ySize="8192" />
+      <DstRect xOff="0" yOff="0" xSize="8192" ySize="8192" />
+      <NODATA>nan</NODATA>
+    </ComplexSource>
+    <ComplexSource>
+      <SourceFilename relativeToVRT="0">/mnt/share/geospatial/ihmepop/gbd_release_id_16/lsae_1285/sex_age_splits.20Nov2025/2023q1/sex_id_3_age_group_id_22/B-0032X-0004Y.tif</SourceFilename>
+      <SourceBand>1</SourceBand>
+      <SourceProperties RasterXSize="8192" RasterYSize="8192" DataType="Float32" BlockXSize="8192" BlockYSize="1" />
+      <SrcRect xOff="0" yOff="0" xSize="8192" ySize="8192" />
+      <DstRect xOff="0" yOff="8192" xSize="8192" ySize="8192" />
+      <NODATA>nan</NODATA>
+    </ComplexSource>
+    <ComplexSource>
+      <SourceFilename relativeToVRT="0">/mnt/share/geospatial/ihmepop/gbd_release_id_16/lsae_1285/sex_age_splits.20Nov2025/2023q1/sex_id_3_age_group_id_22/B-0033X-0003Y.tif</SourceFilename>
+      <SourceBand>1</SourceBand>
+      <SourceProperties RasterXSize="8192" RasterYSize="8192" DataType="Float32" BlockXSize="8192" BlockYSize="1" />
+      <SrcRect xOff="0" yOff="0" xSize="8192" ySize="8192" />
+      <DstRect xOff="8192" yOff="0" xSize="8192" ySize="8192" />
+      <NODATA>nan</NODATA>
+    </ComplexSource>
+    <ComplexSource>
+      <SourceFilename relativeToVRT="0">/mnt/share/geospatial/ihmepop/gbd_release_id_16/lsae_1285/sex_age_splits.20Nov2025/2023q1/sex_id_3_age_group_id_22/B-0033X-0004Y.tif</SourceFilename>
+      <SourceBand>1</SourceBand>
+      <SourceProperties RasterXSize="8192" RasterYSize="8192" DataType="Float32" BlockXSize="8192" BlockYSize="1" />
+      <SrcRect xOff="0" yOff="0" xSize="8192" ySize="8192" />
+      <DstRect xOff="8192" yOff="8192" xSize="8192" ySize="8192" />
+      <NODATA>nan</NODATA>
+    </ComplexSource>
+    <ComplexSource>
+      <SourceFilename relativeToVRT="0">/mnt/share/geospatial/ihmepop/gbd_release_id_16/lsae_1285/sex_age_splits.20Nov2025/2023q1/sex_id_3_age_group_id_22/B-0034X-0003Y.tif</SourceFilename>
+      <SourceBand>1</SourceBand>
+      <SourceProperties RasterXSize="8192" RasterYSize="8192" DataType="Float32" BlockXSize="8192" BlockYSize="1" />
+      <SrcRect xOff="0" yOff="0" xSize="8192" ySize="8192" />
+      <DstRect xOff="16384" yOff="0" xSize="8192" ySize="8192" />
+      <NODATA>nan</NODATA>
+    </ComplexSource>
+    <ComplexSource>
+      <SourceFilename relativeToVRT="0">/mnt/share/geospatial/ihmepop/gbd_release_id_16/lsae_1285/sex_age_splits.20Nov2025/2023q1/sex_id_3_age_group_id_22/B-0034X-0004Y.tif</SourceFilename>
+      <SourceBand>1</SourceBand>
+      <SourceProperties RasterXSize="8192" RasterYSize="8192" DataType="Float32" BlockXSize="8192" BlockYSize="1" />
+      <SrcRect xOff="0" yOff="0" xSize="8192" ySize="8192" />
+      <DstRect xOff="16384" yOff="8192" xSize="8192" ySize="8192" />
+      <NODATA>nan</NODATA>
+    </ComplexSource>
+    <ComplexSource>
+      <SourceFilename relativeToVRT="0">/mnt/share/geospatial/ihmepop/gbd_release_id_16/lsae_1285/sex_age_splits.20Nov2025/2023q1/sex_id_3_age_group_id_22/B-0035X-0003Y.tif</SourceFilename>
+      <SourceBand>1</SourceBand>
+      <SourceProperties RasterXSize="8192" RasterYSize="8192" DataType="Float32" BlockXSize="8192" BlockYSize="1" />
+      <SrcRect xOff="0" yOff="0" xSize="8192" ySize="8192" />
+      <DstRect xOff="24576" yOff="0" xSize="8192" ySize="8192" />
+      <NODATA>nan</NODATA>
+    </ComplexSource>
+  </VRTRasterBand>
+</VRTDataset>
