@@ -1,7 +1,7 @@
 # IDD Spatial Analysis
 
-[![Python](https://img.shields.io/badge/python-3.13+-blue.svg)](https://www.python.org/downloads/)
-[![Poetry](https://img.shields.io/badge/poetry-managed-blue.svg)](https://python-poetry.org/)
+[![Python](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
+[![uv](https://img.shields.io/badge/uv-managed-blue.svg)](https://docs.astral.sh/uv/)
 
 Geospatial analysis tools for IDD research, focusing on clinic proximity analysis and population coverage estimation.
 
@@ -14,27 +14,30 @@ Geospatial analysis tools for IDD research, focusing on clinic proximity analysi
 
 ## 📦 Environment Setup
 
-This project uses conda for environment management with Python 3.13 and all necessary geospatial libraries.
+This project uses a uv-managed project `.venv` (Python 3.12). All dependencies
+are declared in `pyproject.toml` and pinned in `uv.lock`.
 
-### Create and Activate Environment
+### Create the environment
 
 ```bash
 # Clone the repository (if not already cloned)
 git clone https://github.com/ihmeuw/idd-spatial-analysis.git
 cd idd-spatial-analysis
 
-# Create the conda environment
-conda env create -f environment.yml
-
-# Activate the environment
-conda activate idd-spatial-analysis
-
-# Install the package in development mode
-poetry install
+# Create the .venv on the uv-managed CPython and sync all dependencies
+uv venv --python 3.12
+uv sync --all-extras
 
 # Create Jupyter kernel (for notebooks)
-python -m ipykernel install --user --name=idd-spatial-analysis --display-name="Python 3.13 (idd-spatial-analysis)"
+.venv/bin/python -m ipykernel install --user --name=idd-spatial-analysis --display-name="idd-spatial-analysis (.venv)"
 ```
+
+Run code via `.venv/bin/python` directly (use the absolute path in Slurm job
+scripts — no activation required). `source .venv/bin/activate` is an optional
+interactive convenience.
+
+Day-to-day dependency sync: `uv sync --inexact`. For clean rebuilds use plain
+`uv sync` (exact), vetted first with `uv sync --dry-run`.
 
 ## 💡 Usage
 
@@ -100,8 +103,8 @@ idd-spatial-analysis/
 ├── tests/                       # Unit tests
 │   ├── __init__.py
 │   └── test_spatial_utils.py
-├── pyproject.toml              # Poetry configuration
-├── environment.yml             # Conda environment (Python 3.13)
+├── pyproject.toml              # Project metadata + dependencies (PEP 621, uv)
+├── uv.lock                     # Locked dependency versions
 └── README.md
 ```
 
@@ -133,17 +136,17 @@ Export coverage raster to GeoTIFF file.
 ### Running Tests
 
 ```bash
-poetry run pytest
+.venv/bin/python -m pytest
 ```
 
 ### Code Formatting
 
 ```bash
 # Format with black
-poetry run black src/
+.venv/bin/black src/
 
 # Sort imports
-poetry run isort src/
+.venv/bin/isort src/
 ```
 
 ## 📝 License
