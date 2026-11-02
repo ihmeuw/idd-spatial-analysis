@@ -70,3 +70,6 @@ htmlcov/
 
 # Documentation
 docs/_build/
+
+# Claude Code session files, local to each clone (STANDARDS §Other conventions)
+.claude/
