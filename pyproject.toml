@@ -101,6 +101,8 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+# tmp_path lives inside the repo (gitignored), never under the system temp directory.
+addopts = "--basetemp=.pytest_tmp"
 markers = [
     "qc: checks against real cluster data; skipped unless paths.yaml points at it (tests/qc)",
 ]
