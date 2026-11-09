@@ -1,4 +1,11 @@
-"""Value-level checks against the cluster data named in paths.yaml (never shape-only)."""
+"""Checks against the cluster data named in paths.yaml.
+
+Schema and dtype checks on a real LBD release, whole-pixel block grids on the real tile
+index, raking shapes against the hierarchy's leaves, and population conservation of the
+block weights on one real block. The comparison of a block's zone weights against
+climate-aggregates' own population parquet (PROPOSED_STRUCTURE §Testing) is not here yet; see
+STATUS.md's parking lot.
+"""
 
 from __future__ import annotations
 

@@ -17,7 +17,7 @@ from rasterio.merge import merge
 from idd_spatial_analysis.constants import RASTER_FLOAT_DTYPE
 from idd_spatial_analysis.crs import crs_equal
 from idd_spatial_analysis.frame.bounds import bbox_in_crs
-from idd_spatial_analysis.frame.grid import BlockGrid, grid_from_raster
+from idd_spatial_analysis.frame.grid import BlockGrid, check_nodata, grid_from_raster
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -89,30 +89,48 @@ def mosaic(  # noqa: PLR0913  (keyword-only read options)
 ) -> Raster:
     """One array covering ``bounds`` merged from several rasters in the same CRS.
 
-    Tiles are merged first-wins in the order given. ``resolution`` defaults to the first
-    raster's; the nodata value is the first raster's.
+    Tiles are merged first-wins in the order given. Without ``resolution`` the output lies on
+    the first raster's lattice and covers ``bounds`` entirely, the grid ``read_window`` would
+    give for the same bounds; with one, the output grid starts at the top-left of ``bounds``
+    and the merge is a nearest-neighbour resample. Pixels no raster covers hold the first
+    raster's nodata value, or NaN when a float raster declares none; integer rasters must
+    declare one.
     """
     files = [Path(path) for path in paths]
     if not files:
         msg = "mosaic needs at least one raster"
         raise ValueError(msg)
     grids = [grid_from_raster(path) for path in files]
-    crs = grids[0].crs
+    first_grid = grids[0]
     for path, grid in zip(files, grids, strict=True):
-        if not crs_equal(grid.crs, crs):
-            msg = f"{path} is in {grid.crs}, expected {crs}"
+        if not crs_equal(grid.crs, first_grid.crs):
+            msg = f"{path} is in {grid.crs}, expected {first_grid.crs}"
             raise ValueError(msg)
     if bounds_crs is not None:
-        bounds = bbox_in_crs(bounds, bounds_crs, crs)
-    res = grids[0].resolution if resolution is None else resolution
+        bounds = bbox_in_crs(bounds, bounds_crs, first_grid.crs)
+    res: float | tuple[float, float]
+    if resolution is None:
+        target = first_grid.sub(first_grid.window(bounds, clip=False))
+        bounds, res = target.bounds, first_grid.resolution
+    else:
+        res = resolution
     with rasterio.open(files[0]) as first:
         nodata = first.nodata
+        dtype = np.dtype(first.dtypes[band - 1])
+    if nodata is None:
+        if dtype.kind in _INTEGER_KINDS:
+            msg = f"mosaic of integer rasters needs a nodata value; {files[0]} declares none"
+            raise ValueError(msg)
+        nodata = math.nan
     merged, transform = merge(
         [str(path) for path in files], bounds=bounds, res=res, nodata=nodata, indexes=[band]
     )
     data = merged[0]
     grid = BlockGrid(
-        crs=crs, transform=Affine(*transform[:6]), height=data.shape[0], width=data.shape[1]
+        crs=first_grid.crs,
+        transform=Affine(*transform[:6]),
+        height=data.shape[0],
+        width=data.shape[1],
     )
     out = _to_float(data, nodata) if as_float else data
     return out, grid
@@ -139,17 +157,37 @@ def atomic_write(path: Path | str, write_fn: Callable[[Path], object]) -> None:
         raise
 
 
-def _check_nodata(dtype: np.dtype[Any], nodata: float | None) -> None:
-    if nodata is None or dtype.kind not in _INTEGER_KINDS:
-        return
-    value = float(nodata)
-    if not math.isfinite(value) or not value.is_integer():
-        msg = f"nodata {nodata!r} is not representable in {dtype.name}"
+def _narrow(data: NDArray[Any], out_dtype: np.dtype[Any], nodata: float | None) -> NDArray[Any]:
+    """``data`` as ``out_dtype`` with nothing silently damaged.
+
+    For an integer target: NaN and infinite pixels become ``nodata`` (refused when there is
+    none), non-integral values are refused (round explicitly), and values outside the dtype's
+    range are refused. Float targets cast as numpy does.
+    """
+    if data.dtype == out_dtype:
+        return data
+    if out_dtype.kind not in _INTEGER_KINDS:
+        return data.astype(out_dtype)
+    values = data
+    if values.dtype.kind == "f":
+        finite = np.isfinite(values)
+        if not finite.all():
+            if nodata is None:
+                msg = (
+                    f"array holds NaN or infinite pixels and no nodata is given to stand for "
+                    f"them in {out_dtype.name}"
+                )
+                raise ValueError(msg)
+            values = np.where(finite, values, nodata)
+        if not np.array_equal(values, np.floor(values)):
+            msg = f"array holds non-integral values; round it explicitly before writing as {out_dtype.name}"
+            raise ValueError(msg)
+    info = np.iinfo(out_dtype)
+    low, high = values.min(), values.max()
+    if low < info.min or high > info.max:
+        msg = f"values {low}..{high} do not fit {out_dtype.name} ({info.min}..{info.max})"
         raise ValueError(msg)
-    info = np.iinfo(dtype)
-    if not info.min <= int(value) <= info.max:
-        msg = f"nodata {nodata!r} is outside the range of {dtype.name}"
-        raise ValueError(msg)
+    return values.astype(out_dtype)
 
 
 def _check_header(path: Path, grid: BlockGrid, dtype: np.dtype[Any], count: int) -> None:
@@ -182,8 +220,10 @@ def write_geotiff_atomic(
     """Write ``array`` on ``grid`` as a compressed GeoTIFF through ``atomic_write``.
 
     ``array`` is 2-D or 3-D with bands first. ``nodata`` must be representable in the output
-    dtype (NaN is refused for integer types). After writing, the file's header (shape, count,
-    dtype, CRS, transform) is checked against the request; the pixels are never read back.
+    dtype (NaN is refused for integer types). Narrowing a float array to an integer dtype maps
+    NaN to ``nodata`` and refuses non-integral or out-of-range values. After writing, the
+    file's header (shape, count, dtype, CRS, transform) is checked against the request; the
+    pixels are never read back.
     """
     data = np.asarray(array)
     if data.ndim == _IMAGE_NDIM:
@@ -194,15 +234,15 @@ def write_geotiff_atomic(
     if data.shape[1:] != grid.shape:
         msg = f"array shape {data.shape[1:]} does not match the grid {grid.shape}"
         raise ValueError(msg)
-    out_dtype = np.dtype(dtype) if dtype is not None else data.dtype
-    _check_nodata(out_dtype, nodata)
+    out_dtype = check_nodata(dtype if dtype is not None else data.dtype, nodata)
+    data = _narrow(data, out_dtype, nodata)
     count = int(data.shape[0])
     profile = grid.profile(dtype=out_dtype.name, nodata=nodata, count=count)
     target = Path(path)
 
     def _write(tmp: Path) -> None:
         with rasterio.open(tmp, "w", **profile) as dst:
-            dst.write(data.astype(out_dtype, copy=False))
+            dst.write(data)
         _check_header(tmp, grid, out_dtype, count)
 
     atomic_write(target, _write)

@@ -101,6 +101,37 @@ def test_parents_and_unknown_zones_are_refused(
         rollup_hierarchy(leaf_sums, hierarchy.drop(columns=["level"]))
 
 
+def test_duplicate_rows_are_refused(leaf_sums: pd.DataFrame, hierarchy: pd.DataFrame) -> None:
+    doubled = pd.concat([leaf_sums, leaf_sums.iloc[:1]], ignore_index=True)
+    with pytest.raises(ValueError, match="more than one row"):
+        rollup_hierarchy(doubled, hierarchy)
+    sliced = leaf_sums.assign(slice=0)
+    stacked = pd.concat([sliced, sliced.iloc[:1]], ignore_index=True)
+    with pytest.raises(ValueError, match="more than one row"):
+        rollup_hierarchy(stacked, hierarchy)
+
+
+def test_completeness_is_checked_per_slice(
+    leaf_sums: pd.DataFrame, hierarchy: pd.DataFrame
+) -> None:
+    stacked = pd.concat(
+        [leaf_sums.assign(slice=0), leaf_sums.iloc[:3].assign(slice=1)], ignore_index=True
+    )
+    with pytest.raises(ValueError, match="slice 1"):
+        rollup_hierarchy(stacked, hierarchy)
+    out = rollup_hierarchy(stacked, hierarchy, require_complete=False)
+    root = out.loc[out["location_id"] == 1].set_index("slice")
+    assert root.loc[0, "weighted_sum"] == 100.0
+    assert root.loc[1, "weighted_sum"] == 60.0
+
+
+def test_roots_may_sit_above_level_zero(leaf_sums: pd.DataFrame, hierarchy: pd.DataFrame) -> None:
+    shifted = hierarchy.assign(level=hierarchy["level"] + 1)
+    out = rollup_hierarchy(leaf_sums, shifted)
+    assert out["level"].tolist() == [1, 2, 2, 2, 3, 3, 3]
+    assert out.set_index("location_id").loc[1, "weighted_sum"] == 100.0
+
+
 def test_inconsistent_hierarchies_raise(leaf_sums: pd.DataFrame, hierarchy: pd.DataFrame) -> None:
     skipped = hierarchy.copy()
     skipped.loc[skipped["location_id"] == 4, "level"] = 3

@@ -54,11 +54,15 @@ Under `raking_root` (the population model's `admin-inputs/raking` directory):
 
 - `load_raking_shapes(root, "gbd_2023")`: the most-detailed polygons of a GBD hierarchy,
   taken from `shapes_gbd_2023.parquet` and filtered to the locations flagged `most_detailed`
-  in the latest year of `population_gbd_2023.parquet`.
+  in `population_gbd_2023.parquet`. The flag is expected to be the same in every year of that
+  file and the loader checks it; when it differs, `year_id=` names the year to use, so no
+  year is ever picked silently.
 - `load_raking_shapes(root, "lsae_1285")`: `gbd-inputs/shapes_lsae_1285_a2.parquet` as is.
 - `fhs_*` hierarchies have no shapes of their own; use the GBD parent.
-- `bounds=` filters polygons to those intersecting a box in the file's CRS: through the
-  GeoParquet covering column when the file has one, and always by an exact intersects test.
+- `bounds=` keeps the polygons intersecting a box in the file's CRS: the read itself is
+  filtered when the file carries a GeoParquet covering column (otherwise the whole file is
+  read first), and an exact intersects test applies either way. With `bounds` an empty result
+  is possible; without it, it is an error.
 - `load_hierarchy(root, name)`: `location_id`, `parent_id`, `level` as int32.
 
 `location_id` is int32 everywhere, which is also what `rasterize_zones` needs for a zone id.

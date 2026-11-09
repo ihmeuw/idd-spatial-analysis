@@ -72,6 +72,18 @@ def test_overlapping_zones_last_wins(grid: BlockGrid) -> None:
     assert windows[2] == Window(0, 32, 32, 32)
 
 
+def test_empty_zones_and_0_360_longitudes_are_refused(
+    grid: BlockGrid, zones_gdf: gpd.GeoDataFrame
+) -> None:
+    with pytest.raises(ValueError, match="empty"):
+        rasterize_zones(zones_gdf.iloc[:0], "zone", grid)
+    wrapped = gpd.GeoDataFrame(
+        {"zone": np.array([1], dtype="int32")}, geometry=[box(170, -20, 190, -10)], crs=WGS84
+    )
+    with pytest.raises(ValueError, match="to_lon_180"):
+        rasterize_zones(wrapped, "zone", grid)
+
+
 def test_bad_ids_and_inputs(grid: BlockGrid, zones_gdf: gpd.GeoDataFrame) -> None:
     with pytest.raises(KeyError, match="nope"):
         rasterize_zones(zones_gdf, "nope", grid)

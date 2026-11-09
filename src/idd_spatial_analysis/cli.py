@@ -54,6 +54,9 @@ def materialize_admin_release(
     except ValueError as exc:
         msg = f"--levels must be comma-separated integers, got {levels!r}"
         raise click.ClickException(msg) from exc
+    if not level_list:
+        msg = f"--levels names no level, got {levels!r}"
+        raise click.ClickException(msg)
     source = AdminRelease(paths[_SOURCE_KEY], release, simplified=True)
     try:
         copied = copy_release(

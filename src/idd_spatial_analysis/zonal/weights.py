@@ -16,6 +16,7 @@ from idd_spatial_analysis.constants import (
     ZONE_NODATA,
 )
 from idd_spatial_analysis.raster.regrid import NearestIndexMap
+from idd_spatial_analysis.zonal.sums import check_zone_mask
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
@@ -28,24 +29,34 @@ def zone_weights(
     weight: NDArray[Any],
     grid: BlockGrid,
     coarse: BlockGrid,
+    *,
+    allow_uncovered: bool = False,
 ) -> pd.DataFrame:
     """``(zone, coarse_row, coarse_col, weight)``: summed weight of each zone's pixels per coarse cell.
 
     Each fine pixel is assigned to the coarse cell its centre falls in (pixel-centre nearest,
-    any CRS). Pixels with zone ``0``, a NaN weight, or a centre outside the coarse grid do not
-    appear. Applying these weights to a coarse field gives weighted sums per zone without
-    touching the fine grid again.
+    any CRS). Pixels with zone ``0`` or a NaN weight do not appear. A zoned, weighted pixel
+    whose centre falls outside the coarse grid is an error unless ``allow_uncovered=True``,
+    which drops such pixels. Applying these weights to a coarse field gives weighted sums per
+    zone without touching the fine grid again.
     """
     zone = np.asarray(mask)
     w = np.asarray(weight, dtype=np.float64)
+    check_zone_mask(zone)
     if zone.shape != grid.shape or w.shape != grid.shape:
         msg = f"mask {zone.shape} and weight {w.shape} must match the grid {grid.shape}"
         raise ValueError(msg)
-    if zone.dtype.kind not in "iu":
-        msg = f"mask must hold integer zone ids, got {zone.dtype}"
-        raise TypeError(msg)
     coarse_rows, coarse_cols = NearestIndexMap.build(coarse, grid).indices()
-    valid = (zone != ZONE_NODATA) & np.isfinite(w) & (coarse_rows >= 0)
+    counted = (zone != ZONE_NODATA) & np.isfinite(w)
+    covered = coarse_rows >= 0
+    uncovered = counted & ~covered
+    if uncovered.any() and not allow_uncovered:
+        msg = (
+            f"{int(uncovered.sum())} zoned pixels carrying {w[uncovered].sum():.6g} of weight "
+            "fall outside the coarse grid; enlarge it or pass allow_uncovered=True"
+        )
+        raise ValueError(msg)
+    valid = counted & covered
     n_cells = coarse.height * coarse.width
     cell = coarse_rows[valid].astype(np.int64) * coarse.width + coarse_cols[valid].astype(np.int64)
     key = zone[valid].astype(np.int64) * n_cells + cell

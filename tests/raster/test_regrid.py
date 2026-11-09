@@ -118,6 +118,29 @@ def test_reproject_identity_and_nearest_agree_with_lookup(
     np.testing.assert_array_equal(warped, looked)
 
 
+def test_reproject_without_nodata_leaves_uncovered_pixels_nan(
+    grid: BlockGrid, population: np.ndarray
+) -> None:
+    target = grid_from_bounds((-2000.0, -2000.0, 2000.0, 2000.0), 100.0, grid.crs)
+    out = reproject_to_grid(population, grid, target, nodata=None)
+    assert np.isnan(out[:, :20]).all()
+    assert np.isnan(out[20:, :]).all()
+    np.testing.assert_array_equal(out[:20, 20:], population[44:64, 0:20])
+
+
+def test_lookup_edge_tolerance_on_a_non_binary_lattice() -> None:
+    fine = BlockGrid(
+        crs=WGS84, transform=Affine(1 / 120, 0, -73.3, 0, -1 / 120, 45.7), height=64, width=64
+    )
+    coarse = BlockGrid(
+        crs=WGS84, transform=Affine(1 / 60, 0, -73.3, 0, -1 / 60, 45.7), height=32, width=32
+    )
+    values = np.arange(64 * 64, dtype="float32").reshape(64, 64)
+    np.testing.assert_array_equal(
+        NearestIndexMap.build(fine, coarse).apply(values), values[1::2, 1::2]
+    )
+
+
 def test_reproject_to_lonlat_and_bad_inputs(grid: BlockGrid, population: np.ndarray) -> None:
     target = grid_from_bounds(grid.lonlat_bounds(), 0.002, WGS84)
     out = reproject_to_grid(population, grid, target, resampling="average")

@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 
 _M2_PER_KM2 = 1e6
 _MIN_EDGES = 2
+_POLE_DEGREES = 90.0
 
 
 def cell_area_km2(
@@ -24,9 +25,12 @@ def cell_area_km2(
     """Exact spherical area of each row of a lat/lon grid, in km2.
 
     ``lat_edges`` are the row edges from top to bottom (length rows + 1, degrees); each row's
-    area is ``R^2 * dlon * |sin(top) - sin(bottom)|`` and is the same for every column.
+    area is ``R^2 * dlon * |sin(top) - sin(bottom)|`` and is the same for every column. Edges
+    beyond the poles (a grid whose rows are centred on them) are clipped to +/-90, so such a
+    row gets the area of the polar cap it covers.
     """
-    edges = np.radians(np.asarray(lat_edges, dtype=np.float64))
+    latitudes = np.clip(np.asarray(lat_edges, dtype=np.float64), -_POLE_DEGREES, _POLE_DEGREES)
+    edges = np.radians(latitudes)
     if edges.ndim != 1 or edges.size < _MIN_EDGES:
         msg = "lat_edges must be a 1-D array of at least two edges"
         raise ValueError(msg)

@@ -10,12 +10,16 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import geopandas as gpd
 from shapely import affinity
-from shapely.geometry import LineString, MultiPolygon, Polygon
+from shapely.geometry import LineString
 from shapely.ops import split, unary_union
 
+from idd_spatial_analysis.crs import is_geographic
+
 if TYPE_CHECKING:
-    import geopandas as gpd
+    from collections.abc import Callable
+
     from shapely.geometry.base import BaseGeometry
 
 _FULL_TURN = 360.0
@@ -23,6 +27,7 @@ _HALF_TURN = 180.0
 _WELD_EPS = 1e-6
 """Degrees; closes hairline gaps between pieces that were split by a GIS at the meridian."""
 _SEAM_TOL = 1e-6
+_LON_TOL = 1e-9
 _BOTH_SIDES = 2
 _POLYGON_TYPES = {"Polygon", "MultiPolygon"}
 _SUPPORTED_TYPES = _POLYGON_TYPES | {"Point", "MultiPoint", "LineString", "MultiLineString"}
@@ -40,6 +45,19 @@ def _parts(geom: BaseGeometry) -> list[BaseGeometry]:
     return [geom]
 
 
+def _crosses(part: BaseGeometry, meridian: LineString) -> bool:
+    """True when ``part`` has material on both sides of the meridian.
+
+    A point cannot straddle it, a touching polygon only meets it, and a line lying along it
+    has nothing to cut; all three stay whole.
+    """
+    if part.geom_type == "Point":
+        return False
+    return bool(
+        part.intersects(meridian) and not part.touches(meridian) and not part.within(meridian)
+    )
+
+
 def split_at_meridian(geom: BaseGeometry, longitude: float) -> list[BaseGeometry]:
     """Pieces of ``geom`` on either side of ``longitude``; the geometry itself if it does not cross."""
     _check_supported(geom)
@@ -48,7 +66,7 @@ def split_at_meridian(geom: BaseGeometry, longitude: float) -> list[BaseGeometry
     for part in _parts(geom):
         if part.is_empty:
             continue
-        if part.intersects(meridian) and not part.touches(meridian):
+        if _crosses(part, meridian):
             pieces.extend(piece for piece in split(part, meridian).geoms if not piece.is_empty)
         else:
             pieces.append(part)
@@ -96,9 +114,12 @@ def to_lon_360(geom: BaseGeometry) -> BaseGeometry:
     """``geom`` in the 0..360 convention: western pieces (x < 0) move east by 360 degrees.
 
     A polygon crossing the prime meridian becomes two pieces at 0 and 360; a polygon that was
-    split at the antimeridian becomes whole again (its halves meet at 180 and are welded).
+    split at the antimeridian becomes whole again (its halves meet at 180 and are welded). An
+    empty geometry comes back unchanged.
     """
     _check_supported(geom)
+    if geom.is_empty:
+        return geom
     moved = _shift_far_side(geom, cut_at=0.0, far_side_is_west=True, shift=_FULL_TURN)
     return _assemble(moved, seam=_HALF_TURN, polygonal=geom.geom_type in _POLYGON_TYPES)
 
@@ -107,16 +128,22 @@ def to_lon_180(geom: BaseGeometry) -> BaseGeometry:
     """``geom`` in the -180..180 convention: pieces beyond 180 move west by 360 degrees.
 
     A polygon crossing 180 becomes two pieces at the edges; pieces that meet at the prime
-    meridian are welded.
+    meridian are welded. An empty geometry comes back unchanged.
     """
     _check_supported(geom)
+    if geom.is_empty:
+        return geom
     moved = _shift_far_side(geom, cut_at=_HALF_TURN, far_side_is_west=False, shift=-_FULL_TURN)
     return _assemble(moved, seam=0.0, polygonal=geom.geom_type in _POLYGON_TYPES)
 
 
-def _apply(gdf: gpd.GeoDataFrame, convert: object) -> gpd.GeoDataFrame:
+def _apply(
+    gdf: gpd.GeoDataFrame, convert: Callable[[BaseGeometry], BaseGeometry]
+) -> gpd.GeoDataFrame:
     out = gdf.copy()
-    out["geometry"] = out.geometry.apply(convert)  # CRS metadata is kept on purpose
+    name = out.geometry.name
+    converted = gpd.GeoSeries(out.geometry.apply(convert), index=out.index, crs=gdf.crs)
+    out[name] = converted  # the active geometry column, whatever it is called; CRS kept
     return out
 
 
@@ -130,11 +157,18 @@ def to_lon_180_gdf(gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     return _apply(gdf, to_lon_180)
 
 
-def as_multipolygon(geom: BaseGeometry) -> MultiPolygon:
-    """``geom`` as a MultiPolygon (a Polygon is wrapped); raises for other types."""
-    if isinstance(geom, MultiPolygon):
-        return geom
-    if isinstance(geom, Polygon):
-        return MultiPolygon([geom])
-    msg = f"expected a polygonal geometry, got {geom.geom_type}"
-    raise TypeError(msg)
+def check_lon_180(gdf: gpd.GeoDataFrame) -> None:
+    """Raise ``ValueError`` when a lon/lat GeoDataFrame holds longitudes beyond -180..180.
+
+    Reprojecting such geometries (the 0..360 convention) wraps them around the world; convert
+    with ``to_lon_180_gdf`` first. Projected or CRS-less frames pass.
+    """
+    if gdf.empty or gdf.crs is None or not is_geographic(gdf.crs):
+        return
+    minx, _, maxx, _ = gdf.total_bounds
+    if minx < -_HALF_TURN - _LON_TOL or maxx > _HALF_TURN + _LON_TOL:
+        msg = (
+            f"longitudes span {minx:.6g}..{maxx:.6g}, beyond -180..180; "
+            "convert with to_lon_180_gdf first"
+        )
+        raise ValueError(msg)

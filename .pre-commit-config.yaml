@@ -43,6 +43,6 @@ repos:
         name: block absolute filesystem paths
         # Public-bound repo: no absolute cluster paths in any committed file. .example files use
         # placeholder paths (/your/cluster/path/...) that do not match this regex by design.
-        entry: bash -c 'git diff --cached --name-only --diff-filter=d -z | grep -zvE "\.pre-commit-config\.yaml$" | xargs -0 -r grep -lE "(/ihme/|/snfs1/|/home/j/|/mnt/share/|^[A-Z]:\\\\)" 2>/dev/null | (! grep .)'
+        entry: bash -c 'git diff --cached --name-only --diff-filter=d -z | grep -zvE "\.pre-commit-config\.yaml$" | xargs -0 -r grep -lE "(/ihme/|/snfs1/|/home/j/|/mnt/share/|/mnt/team/|^[A-Z]:\\\\)" 2>/dev/null | (! grep .)'
         language: system
         pass_filenames: false

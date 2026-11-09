@@ -96,6 +96,25 @@ def test_materialize_reports_missing_release_bad_levels_and_simplified_only(
     assert all(name.startswith("lbd_standard_admin_0_simplified") for name in written)
 
 
+def test_levels_naming_nothing_is_an_error(tmp_path: Path, release: AdminRelease) -> None:
+    paths = _paths_yaml(tmp_path, release, ["project_output_root"])
+    result = CliRunner().invoke(
+        main,
+        [
+            "materialize-admin-release",
+            "--release",
+            "2024_07_29",
+            "--levels",
+            ",",
+            "--paths-file",
+            str(paths),
+        ],
+    )
+    assert result.exit_code == 1
+    assert "no level" in result.output
+    assert not (tmp_path / "node").exists()
+
+
 def test_missing_paths_file_is_a_clean_error(tmp_path: Path) -> None:
     result = CliRunner().invoke(
         main,

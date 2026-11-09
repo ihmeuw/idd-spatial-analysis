@@ -20,6 +20,7 @@ from rasterio.windows import transform as window_transform
 from idd_spatial_analysis.constants import (
     GEOTIFF_BLOCKSIZE,
     GEOTIFF_COMPRESSION,
+    PIXEL_EDGE_DECIMALS,
     RASTER_FLOAT_DTYPE,
     WGS84,
 )
@@ -30,8 +31,37 @@ if TYPE_CHECKING:
 
     from numpy.typing import NDArray
 
-_SPAN_DECIMALS = 6
-"""Rounding applied before ceil() so that a span of 3199.9999999 pixels counts as 3200."""
+_INTEGER_KINDS = "iu"
+
+
+def check_nodata(dtype: str | np.dtype[Any], nodata: float | None) -> np.dtype[Any]:
+    """The dtype, once ``nodata`` is known to be storable in it.
+
+    ``None`` is always allowed. An integer dtype refuses NaN, infinities, non-integral values
+    and values outside its range; float dtypes take any value, NaN included.
+    """
+    out = np.dtype(dtype)
+    if nodata is None or out.kind not in _INTEGER_KINDS:
+        return out
+    value = float(nodata)
+    if not math.isfinite(value) or not value.is_integer():
+        msg = f"nodata {nodata!r} is not representable in {out.name}"
+        raise ValueError(msg)
+    info = np.iinfo(out)
+    if not info.min <= int(value) <= info.max:
+        msg = f"nodata {nodata!r} is outside the range of {out.name}"
+        raise ValueError(msg)
+    return out
+
+
+def pixel_quotient(values: NDArray[Any] | float, origin: float, step: float) -> NDArray[np.float64]:
+    """``(value - origin) / step`` rounded to ``PIXEL_EDGE_DECIMALS``.
+
+    A coordinate a rounding error away from a pixel edge is placed on the edge, so floor and
+    ceil put it in the pixel the documented edge rule says, on every lattice.
+    """
+    quotient = (np.asarray(values, dtype=np.float64) - origin) / step
+    return np.asarray(np.round(quotient, PIXEL_EDGE_DECIMALS), dtype=np.float64)
 
 
 @dataclass(frozen=True)
@@ -89,12 +119,11 @@ class BlockGrid:
     ) -> tuple[NDArray[np.int64], NDArray[np.int64]]:
         """Row and column of each ``(x, y)`` by floor, as rasterio does; no bounds check.
 
-        A point on a shared pixel edge belongs to the pixel to its right or below it.
+        A point on a shared pixel edge (within ``PIXEL_EDGE_DECIMALS`` of it) belongs to the
+        pixel to its right or below it.
         """
-        x_arr = np.asarray(xs, dtype=np.float64)
-        y_arr = np.asarray(ys, dtype=np.float64)
-        cols = np.floor((x_arr - self.transform.c) / self.transform.a)
-        rows = np.floor((y_arr - self.transform.f) / self.transform.e)
+        cols = np.floor(pixel_quotient(xs, self.transform.c, self.transform.a))
+        rows = np.floor(pixel_quotient(ys, self.transform.f, self.transform.e))
         return rows.astype(np.int64), cols.astype(np.int64)
 
     def contains(self, rows: NDArray[Any], cols: NDArray[Any]) -> NDArray[np.bool_]:
@@ -107,18 +136,19 @@ class BlockGrid:
     def window(self, bounds: Bounds, *, pad: int = 0, clip: bool = True) -> Window:
         """Integer window covering ``bounds`` plus ``pad`` pixels.
 
-        Clipped to the grid unless ``clip=False`` (for boundless reads, where the window may
-        start before the first pixel). Raises ``ValueError`` when the bounds are degenerate or,
-        when clipping, do not overlap the grid.
+        Edges within ``PIXEL_EDGE_DECIMALS`` of a pixel edge snap to it, so the bounds of a
+        sub-grid map back to exactly its window. Clipped to the grid unless ``clip=False`` (for
+        boundless reads, where the window may start before the first pixel). Raises
+        ``ValueError`` when the bounds are degenerate or, when clipping, do not overlap the grid.
         """
         left, bottom, right, top = bounds
         if left >= right or bottom >= top:
             msg = f"degenerate bounds {bounds}"
             raise ValueError(msg)
-        col0 = math.floor((left - self.transform.c) / self.transform.a) - pad
-        col1 = math.ceil((right - self.transform.c) / self.transform.a) + pad
-        row0 = math.floor((top - self.transform.f) / self.transform.e) - pad
-        row1 = math.ceil((bottom - self.transform.f) / self.transform.e) + pad
+        col0 = math.floor(pixel_quotient(left, self.transform.c, self.transform.a)) - pad
+        col1 = math.ceil(pixel_quotient(right, self.transform.c, self.transform.a)) + pad
+        row0 = math.floor(pixel_quotient(top, self.transform.f, self.transform.e)) - pad
+        row1 = math.ceil(pixel_quotient(bottom, self.transform.f, self.transform.e)) + pad
         if clip:
             col0, row0 = max(col0, 0), max(row0, 0)
             col1, row1 = min(col1, self.width), min(row1, self.height)
@@ -144,10 +174,15 @@ class BlockGrid:
         nodata: float | None = math.nan,
         count: int = 1,
     ) -> dict[str, Any]:
-        """A rasterio GeoTIFF profile for this grid: compressed, tiled when large enough."""
+        """A rasterio GeoTIFF profile for this grid: compressed, tiled when large enough.
+
+        ``nodata`` must be storable in ``dtype`` (``check_nodata``), so an integer profile needs
+        an explicit integer nodata or ``None``; the NaN default only suits float dtypes.
+        """
+        out_dtype = check_nodata(dtype, nodata)
         profile: dict[str, Any] = {
             "driver": "GTiff",
-            "dtype": dtype,
+            "dtype": out_dtype.name,
             "count": count,
             "crs": self.crs,
             "transform": self.transform,
@@ -177,8 +212,8 @@ def grid_from_bounds(
     if left >= right or bottom >= top:
         msg = f"degenerate bounds {bounds}"
         raise ValueError(msg)
-    width = math.ceil(round((right - left) / xres, _SPAN_DECIMALS))
-    height = math.ceil(round((top - bottom) / yres, _SPAN_DECIMALS))
+    width = math.ceil(pixel_quotient(right, left, xres))
+    height = math.ceil(pixel_quotient(bottom, top, -yres))
     return BlockGrid(
         crs=crs,
         transform=Affine(xres, 0.0, left, 0.0, -yres, top),

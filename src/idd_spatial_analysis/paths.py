@@ -11,6 +11,7 @@ from typing import Any
 import yaml
 
 _PATHS_FILE = Path(__file__).resolve().parents[2] / "paths.yaml"
+_WRITE_KEY = "write"
 
 REQUIRED_KEYS: tuple[str, ...] = (
     "admin_shapefile_root",
@@ -28,8 +29,8 @@ class PathsFileMissingError(FileNotFoundError):
 def load_paths(paths_file: Path | None = None) -> dict[str, Any]:
     """Read ``paths.yaml`` and return its mapping with every root as a ``Path``.
 
-    ``write`` is returned as-is (a list of keys a Claude session may write under); pipeline
-    code ignores it.
+    ``write`` comes back as a list of key names (empty when absent or blank): the roots a
+    session, and the CLI, may write under. Anything else under ``write`` is an error.
     """
     file = paths_file if paths_file is not None else _PATHS_FILE
     if not file.exists():
@@ -42,8 +43,14 @@ def load_paths(paths_file: Path | None = None) -> dict[str, Any]:
         msg = f"{file} lacks required keys: {missing}"
         raise KeyError(msg)
     resolved: dict[str, Any] = {
-        key: (Path(value) if key != "write" and isinstance(value, str) else value)
+        key: (Path(value) if key != _WRITE_KEY and isinstance(value, str) else value)
         for key, value in data.items()
     }
-    resolved.setdefault("write", [])
+    write = resolved.get(_WRITE_KEY)
+    if write is None:
+        write = []
+    if not isinstance(write, list) or not all(isinstance(key, str) for key in write):
+        msg = f"{file}: write must be a list of key names, got {write!r}"
+        raise TypeError(msg)
+    resolved[_WRITE_KEY] = write
     return resolved

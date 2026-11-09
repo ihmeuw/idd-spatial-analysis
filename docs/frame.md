@@ -30,11 +30,14 @@ reads it and checks the CRS and the `block_key` column; it raises on anything el
 - `pixel_centers()`: x of every column centre and y of every row centre.
 - `rowcol(xs, ys)` and `contains(rows, cols)`: coordinates to pixel indices by floor.
 - `window(bounds, pad=0, clip=True)`: the integer window covering some bounds, optionally
-  padded, clipped to the grid unless `clip=False` (for boundless reads).
+  padded, clipped to the grid unless `clip=False` (for boundless reads). Bounds a rounding
+  error from a pixel edge snap to it, so `grid.window(grid.sub(w).bounds) == w` on every
+  lattice.
 - `sub(window)`: the grid of that window.
 - `lonlat_bounds(pad=0)`: the lon/lat box covering the grid.
 - `profile(dtype, nodata, count)`: a GeoTIFF profile (LZW, tiled at 512 when the grid is
-  large enough).
+  large enough); it refuses a nodata the dtype cannot hold, so an integer profile needs an
+  explicit integer nodata or `None`.
 
 `grid_from_bounds(bounds, resolution, crs)` builds a grid for arbitrary bounds and
 `grid_from_raster(path)` reads one from a file.
@@ -43,8 +46,10 @@ reads it and checks the CRS and the `block_key` column; it raises on anything el
 
 `frame.bbox_in_crs(bounds, src_crs, dst_crs)` densifies the edges before reprojecting, so a
 box in the equal-area frame maps to a box that really covers it in lon/lat. It raises when the
-result is not finite (outside the valid area) or, for a geographic target, wider than 180
-degrees (`AntimeridianError`): split the geometry with `geometry.split_antimeridian` first.
+result is not finite (outside the valid area) or, for a geographic target, when the box
+crosses the antimeridian, which GDAL reports as a left edge east of the right edge, or when it
+is wider than 180 degrees (`AntimeridianError` in both cases): split the geometry with
+`geometry.split_antimeridian` first.
 
 ## A block loop
 

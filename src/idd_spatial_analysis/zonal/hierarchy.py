@@ -28,6 +28,51 @@ def _preview(values: set[int]) -> str:
     return f"{shown}{more}"
 
 
+def _check_complete(sums: pd.DataFrame, leaves: set[int], extra: list[str]) -> None:
+    """Every most-detailed location has a row, in every slice when there are slices."""
+    groups = sums.groupby(SLICE_COLUMN) if extra else [(None, sums)]
+    for label, part in groups:
+        missing = leaves - set(part[ZONE_COLUMN].tolist())
+        if missing:
+            where = "" if label is None else f" in slice {label}"
+            msg = f"{len(missing)} most-detailed locations have no sums{where}: {_preview(missing)}"
+            raise ValueError(msg)
+
+
+def _check_tree(tree: pd.DataFrame) -> tuple[int, set[int], set[int]]:
+    """The root level, the parent ids and the leaf ids of a consistent hierarchy table."""
+    if tree[LOCATION_ID_COLUMN].duplicated().any():
+        msg = "hierarchy lists some location_id with more than one parent or level"
+        raise ValueError(msg)
+    root_level = int(tree[LEVEL_COLUMN].min())
+    ids = set(tree[LOCATION_ID_COLUMN].tolist())
+    parents = set(tree.loc[tree[LEVEL_COLUMN] > root_level, PARENT_ID_COLUMN].tolist())
+    if parents - ids:
+        msg = f"hierarchy names parents it does not list: {_preview(parents - ids)}"
+        raise ValueError(msg)
+    return root_level, parents, ids - parents
+
+
+def _check_sums(sums: pd.DataFrame, ids: set[int], parents: set[int], extra: list[str]) -> None:
+    """One row per zone (and slice); every zone a known most-detailed location."""
+    keys = [ZONE_COLUMN, *extra]
+    repeated = sums.duplicated(keys)
+    if repeated.any():
+        msg = (
+            f"sums has more than one row per {keys}: zones "
+            f"{_preview(set(sums.loc[repeated, ZONE_COLUMN].tolist()))}; "
+            "add per-block partials with collate_blocks first"
+        )
+        raise ValueError(msg)
+    zones = set(sums[ZONE_COLUMN].tolist())
+    if zones - ids:
+        msg = f"{len(zones - ids)} zones are not in the hierarchy: {_preview(zones - ids)}"
+        raise ValueError(msg)
+    if zones & parents:
+        msg = f"sums must be at most-detailed locations; these are parents: {_preview(zones & parents)}"
+        raise ValueError(msg)
+
+
 def rollup_hierarchy(
     sums: pd.DataFrame,
     hierarchy: pd.DataFrame,
@@ -37,35 +82,22 @@ def rollup_hierarchy(
     """Sums and means at every level of ``hierarchy`` from most-detailed ``weighted_sums``.
 
     ``sums`` has ``zone`` (a most-detailed ``location_id``), ``weighted_sum``, ``weight_sum``
-    and optionally ``slice``; ``hierarchy`` has ``location_id``, ``parent_id``, ``level`` with
-    each parent one level up. Sums are added up the tree and ``mean = weighted_sum /
+    and optionally ``slice``, with exactly one row per zone (and slice): add per-block partials
+    with ``collate_blocks`` first. ``hierarchy`` has ``location_id``, ``parent_id``, ``level``
+    with each parent one level up; the roots are the rows at the lowest level present and
+    their ``parent_id`` is ignored. Sums are added up the tree and ``mean = weighted_sum /
     weight_sum`` is taken once at the end (NaN where the weight sum is zero). Every
-    most-detailed location must be present unless ``require_complete=False``; zones that are
-    not most-detailed are refused because they would be counted twice.
+    most-detailed location must be present in every slice unless ``require_complete=False``;
+    zones that are not most-detailed are refused because they would be counted twice.
     """
     require_columns(sums, [ZONE_COLUMN, *_SUM_COLUMNS], "sums")
     require_columns(hierarchy, [LOCATION_ID_COLUMN, PARENT_ID_COLUMN, LEVEL_COLUMN], "hierarchy")
     extra = [SLICE_COLUMN] if SLICE_COLUMN in sums.columns else []
     tree = hierarchy[[LOCATION_ID_COLUMN, PARENT_ID_COLUMN, LEVEL_COLUMN]].drop_duplicates()
-    if tree[LOCATION_ID_COLUMN].duplicated().any():
-        msg = "hierarchy lists some location_id with more than one parent or level"
-        raise ValueError(msg)
-    ids = set(tree[LOCATION_ID_COLUMN].tolist())
-    parents = set(tree.loc[tree[LEVEL_COLUMN] > 0, PARENT_ID_COLUMN].tolist())
-    if parents - ids:
-        msg = f"hierarchy names parents it does not list: {_preview(parents - ids)}"
-        raise ValueError(msg)
-    leaves = ids - parents
-    zones = set(sums[ZONE_COLUMN].tolist())
-    if zones - ids:
-        msg = f"{len(zones - ids)} zones are not in the hierarchy: {_preview(zones - ids)}"
-        raise ValueError(msg)
-    if zones & parents:
-        msg = f"sums must be at most-detailed locations; these are parents: {_preview(zones & parents)}"
-        raise ValueError(msg)
-    if require_complete and leaves - zones:
-        msg = f"{len(leaves - zones)} most-detailed locations have no sums: {_preview(leaves - zones)}"
-        raise ValueError(msg)
+    root_level, parents, leaves = _check_tree(tree)
+    _check_sums(sums, parents | leaves, parents, extra)
+    if require_complete:
+        _check_complete(sums, leaves, extra)
 
     level_of = tree.set_index(LOCATION_ID_COLUMN)[LEVEL_COLUMN]
     parent_of = tree.set_index(LOCATION_ID_COLUMN)[PARENT_ID_COLUMN]
@@ -74,7 +106,7 @@ def rollup_hierarchy(
     ].copy()
     leaf_rows[LEVEL_COLUMN] = leaf_rows[LOCATION_ID_COLUMN].map(level_of)
     collected = [leaf_rows]
-    for level in range(int(tree[LEVEL_COLUMN].max()), 0, -1):
+    for level in range(int(tree[LEVEL_COLUMN].max()), root_level, -1):
         at_level = pd.concat([rows.loc[rows[LEVEL_COLUMN] == level] for rows in collected])
         if at_level.empty:
             continue

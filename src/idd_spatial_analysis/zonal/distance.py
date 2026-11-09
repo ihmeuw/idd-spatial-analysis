@@ -1,4 +1,11 @@
-"""Nearest-facility distances on a zone mask, and the share of weight within thresholds."""
+"""Nearest-facility distances on a zone mask, and the share of weight within thresholds.
+
+Distances are metres along the Earth's surface whatever the grid's CRS: pixel centres and
+facilities are converted to Earth-centred Cartesian coordinates (EPSG:4978), the nearest
+facility is found in that space (a chord through the Earth) and the chord is turned into an
+arc. Planar distances in the equal-area block frame would be off by the cosine of the
+latitude away from the equator: 15 percent at 30 degrees, a factor of two at 60.
+"""
 
 from __future__ import annotations
 
@@ -6,18 +13,20 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
+from pyproj import Transformer
 from scipy.spatial import cKDTree
 
 from idd_spatial_analysis.constants import (
+    EARTH_RADIUS_KM,
+    GEOCENTRIC_CRS,
     SHARE_COLUMN,
     THRESHOLD_COLUMN,
     WEIGHT_TOTAL_COLUMN,
     WEIGHT_WITHIN_COLUMN,
     ZONE_COLUMN,
-    ZONE_DTYPE,
     ZONE_NODATA,
 )
-from idd_spatial_analysis.crs import crs_equal, is_geographic
+from idd_spatial_analysis.zonal.sums import check_zone_mask, zone_index
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -28,10 +37,35 @@ if TYPE_CHECKING:
 
     from idd_spatial_analysis.frame.grid import BlockGrid
 
+_EARTH_RADIUS_M = EARTH_RADIUS_KM * 1000.0
+_POINT_DIMENSIONS = 3
 
-def _facility_xy(
-    facilities_gdf: gpd.GeoDataFrame, crs: str
-) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+
+def _geocentric(
+    transformer: Transformer, xs: NDArray[Any], ys: NDArray[Any]
+) -> NDArray[np.float64]:
+    """``(n, 3)`` Earth-centred metres of points on the ellipsoid, through ``transformer``."""
+    x = np.asarray(xs, dtype=np.float64)
+    y = np.asarray(ys, dtype=np.float64)
+    gx, gy, gz = transformer.transform(x, y, np.zeros_like(x))
+    points = np.column_stack([gx, gy, gz]).astype(np.float64)
+    if points.ndim != 2 or points.shape[1] != _POINT_DIMENSIONS:  # noqa: PLR2004
+        msg = f"expected (n, 3) geocentric points, got shape {points.shape}"
+        raise ValueError(msg)
+    if not np.isfinite(points).all():
+        bad = int((~np.isfinite(points).all(axis=1)).sum())
+        msg = f"{bad} points have no position on the Earth (outside the CRS's valid area)"
+        raise ValueError(msg)
+    return points
+
+
+def _chord_to_arc(chord: NDArray[Any]) -> NDArray[np.float64]:
+    """Surface distance for a straight-line distance between two points on the sphere."""
+    ratio = np.clip(np.asarray(chord, dtype=np.float64) / (2.0 * _EARTH_RADIUS_M), 0.0, 1.0)
+    return np.asarray(2.0 * _EARTH_RADIUS_M * np.arcsin(ratio), dtype=np.float64)
+
+
+def _facility_points(facilities_gdf: gpd.GeoDataFrame) -> NDArray[np.float64]:
     if facilities_gdf.crs is None:
         msg = "facilities carry no CRS"
         raise ValueError(msg)
@@ -41,10 +75,29 @@ def _facility_xy(
     if not (facilities_gdf.geometry.geom_type == "Point").all():
         msg = "facilities must be Point geometries"
         raise TypeError(msg)
-    points = facilities_gdf.geometry
-    if not crs_equal(facilities_gdf.crs, crs):
-        points = points.to_crs(crs)
-    return points.x.to_numpy(dtype=np.float64), points.y.to_numpy(dtype=np.float64)
+    to_earth = Transformer.from_crs(facilities_gdf.crs, GEOCENTRIC_CRS, always_xy=True)
+    return _geocentric(
+        to_earth,
+        facilities_gdf.geometry.x.to_numpy(dtype=np.float64),
+        facilities_gdf.geometry.y.to_numpy(dtype=np.float64),
+    )
+
+
+def _facility_zones(facilities_gdf: gpd.GeoDataFrame, column: str) -> NDArray[np.int64]:
+    if column not in facilities_gdf.columns:
+        msg = f"facilities lack column {column!r}"
+        raise KeyError(msg)
+    zones = facilities_gdf[column]
+    if zones.isna().any():
+        msg = (
+            f"{int(zones.isna().sum())} facilities have no zone in {column!r}; assign one "
+            "(geometry.points_to_zones) or drop them"
+        )
+        raise ValueError(msg)
+    if not pd.api.types.is_integer_dtype(zones.dtype):
+        msg = f"facility zones must be integers, got {zones.dtype}"
+        raise TypeError(msg)
+    return np.asarray(zones.to_numpy(dtype=np.int64))
 
 
 def _zone_pixels(
@@ -60,50 +113,68 @@ def _zone_pixels(
     return rows, cols
 
 
-def nearest_facility_distance(
+def _nearest(
+    tree: cKDTree,
+    to_earth: Transformer,
+    grid: BlockGrid,
+    rows: NDArray[np.intp],
+    cols: NDArray[np.intp],
+) -> NDArray[np.float64]:
+    xs, ys = grid.pixel_centers()
+    chord, _ = tree.query(_geocentric(to_earth, xs[cols], ys[rows]))
+    return _chord_to_arc(chord)
+
+
+def nearest_facility_distance(  # noqa: PLR0913  (keyword-only options)
     mask: NDArray[Any],
     facilities_gdf: gpd.GeoDataFrame,
     grid: BlockGrid,
     *,
     within_zone: bool,
+    facility_zone_col: str | None = None,
     windows: Mapping[int, Window] | None = None,
 ) -> NDArray[np.float32]:
-    """Distance from each zoned pixel's centre to the nearest facility, in the grid's units.
+    """Metres along the Earth from each zoned pixel's centre to the nearest facility.
 
-    The grid must be projected (metres); facilities are reprojected to it. With
-    ``within_zone=True`` only facilities on the same zone of ``mask`` count (a facility's zone
-    is the mask value under it), and a zone without a facility is NaN throughout. Pixels with
-    zone ``0`` are NaN. ``windows`` (from ``rasterize_zones``) bounds each zone's search.
+    Any grid CRS works: pixel centres and facilities are compared in Earth-centred coordinates,
+    so the result is surface distance, never grid units. Pixels with zone ``0`` are NaN.
+
+    ``within_zone=True`` counts only facilities whose zone equals the pixel's mask value. The
+    facility's zone is read from ``facility_zone_col``, an integer column such as
+    ``geometry.points_to_zones`` produces from the same polygons the mask came from; the
+    facilities may lie anywhere, including outside the grid (a zone that straddles blocks
+    keeps all its facilities), and a facility without a zone is an error. A zone with no
+    facility is NaN throughout. ``windows`` (from ``rasterize_zones``) bounds each zone's
+    pixel search.
     """
-    if is_geographic(grid.crs):
-        msg = f"distances need a projected grid, got {grid.crs}"
-        raise ValueError(msg)
     zone = np.asarray(mask)
+    check_zone_mask(zone)
     if zone.shape != grid.shape:
         msg = f"mask shape {zone.shape} does not match the grid {grid.shape}"
         raise ValueError(msg)
-    fx, fy = _facility_xy(facilities_gdf, grid.crs)
-    xs, ys = grid.pixel_centers()
+    if within_zone and facility_zone_col is None:
+        msg = "within_zone=True needs facility_zone_col, the facilities' zone column"
+        raise ValueError(msg)
+    if not within_zone and facility_zone_col is not None:
+        msg = "facility_zone_col only applies with within_zone=True"
+        raise ValueError(msg)
+    facilities = _facility_points(facilities_gdf)
+    to_earth = Transformer.from_crs(grid.crs, GEOCENTRIC_CRS, always_xy=True)
     out = np.full(grid.shape, np.nan, dtype=np.float32)
     if not within_zone:
         rows, cols = np.nonzero(zone != ZONE_NODATA)
-        tree = cKDTree(np.column_stack([fx, fy]))
-        distance, _ = tree.query(np.column_stack([xs[cols], ys[rows]]))
-        out[rows, cols] = distance
+        if rows.size:
+            out[rows, cols] = _nearest(cKDTree(facilities), to_earth, grid, rows, cols)
         return out
-    frow, fcol = grid.rowcol(fx, fy)
-    inside = grid.contains(frow, fcol)
-    facility_zone = np.full(fx.size, ZONE_NODATA, dtype=ZONE_DTYPE)
-    facility_zone[inside] = zone[frow[inside], fcol[inside]]
+    facility_zone = _facility_zones(facilities_gdf, str(facility_zone_col))
     present = np.unique(zone[zone != ZONE_NODATA])
     for value in present:
         chosen = facility_zone == value
         if not chosen.any():
             continue  # no facility on this zone: its pixels stay NaN by design
         rows, cols = _zone_pixels(zone, int(value), windows)
-        tree = cKDTree(np.column_stack([fx[chosen], fy[chosen]]))
-        distance, _ = tree.query(np.column_stack([xs[cols], ys[rows]]))
-        out[rows, cols] = distance
+        tree = cKDTree(facilities[chosen])
+        out[rows, cols] = _nearest(tree, to_earth, grid, rows, cols)
     return out
 
 
@@ -121,6 +192,7 @@ def share_within(
     d = np.asarray(distance, dtype=np.float64)
     w = np.asarray(weight, dtype=np.float64)
     zone = np.asarray(mask)
+    check_zone_mask(zone)
     if not d.shape == w.shape == zone.shape:
         msg = f"distance {d.shape}, weight {w.shape} and mask {zone.shape} must share a shape"
         raise ValueError(msg)
@@ -128,21 +200,22 @@ def share_within(
     if not cutoffs:
         msg = "thresholds is empty"
         raise ValueError(msg)
-    present = np.unique(zone[zone != ZONE_NODATA]).astype(ZONE_DTYPE)
-    n_bins = int(zone.max()) + 1 if present.size else 1
-    valid = (zone != ZONE_NODATA) & np.isfinite(w)
-    total = np.bincount(zone[valid], weights=w[valid], minlength=n_bins)
+    present, index = zone_index(zone)
+    w_flat = w.ravel()
+    d_flat = d.ravel()
+    valid = (zone.ravel() != ZONE_NODATA) & np.isfinite(w_flat)
+    total = np.bincount(index[valid], weights=w_flat[valid], minlength=present.size)
     frames = []
     for cutoff in cutoffs:
-        within = valid & (d <= cutoff)
-        reached = np.bincount(zone[within], weights=w[within], minlength=n_bins)
+        within = valid & (d_flat <= cutoff)
+        reached = np.bincount(index[within], weights=w_flat[within], minlength=present.size)
         frames.append(
             pd.DataFrame(
                 {
                     ZONE_COLUMN: present,
                     THRESHOLD_COLUMN: np.full(present.size, cutoff, dtype=np.float64),
-                    WEIGHT_WITHIN_COLUMN: reached[present],
-                    WEIGHT_TOTAL_COLUMN: total[present],
+                    WEIGHT_WITHIN_COLUMN: reached,
+                    WEIGHT_TOTAL_COLUMN: total,
                 }
             )
         )

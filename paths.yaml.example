@@ -10,7 +10,8 @@ admin_shapefile_root: /your/cluster/path/admin_shapefiles
 # Directory holding the building-density tile indexes: <resolution>m/tile_index.parquet beneath it.
 tile_index_root: /your/cluster/path/building-density/tiles
 
-# Population-model root: modeling frame and per-block population rasters beneath it.
+# Gridded population rasters on the tile index frame. The package never assumes a layout
+# beneath it: pass the raster you want to read_window or mosaic explicitly.
 population_grid_root: /your/cluster/path/population-model
 
 # Raking inputs: shapes_<hierarchy>.parquet, population_<hierarchy>.parquet, gbd-inputs/.
@@ -19,5 +20,6 @@ raking_root: /your/cluster/path/population-model/admin-inputs/raking
 # This repo's output node (STANDARDS §Output management), used only if data is materialized.
 project_output_root: /your/cluster/path/idd-spatial-analysis
 
-# Keys of roots a Claude session may write under, beyond the repo and its node (STANDARDS §Path safety).
+# Keys of roots that may be written under (STANDARDS §Path safety). The CLI copies an LBD
+# release only when project_output_root is listed here, e.g. write: [project_output_root].
 write: []

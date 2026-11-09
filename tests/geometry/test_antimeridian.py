@@ -4,10 +4,19 @@ from __future__ import annotations
 
 import geopandas as gpd
 import pytest
-from shapely.geometry import GeometryCollection, LineString, MultiPolygon, Point, Polygon, box
+from shapely.geometry import (
+    GeometryCollection,
+    LineString,
+    MultiPoint,
+    MultiPolygon,
+    Point,
+    Polygon,
+    box,
+)
 
-from idd_spatial_analysis.constants import WGS84
+from idd_spatial_analysis.constants import WGS84, WORLD_CYLINDRICAL_EQUAL_AREA
 from idd_spatial_analysis.geometry import (
+    check_lon_180,
     split_antimeridian,
     split_at_meridian,
     to_lon_180,
@@ -78,6 +87,21 @@ def test_points_and_lines() -> None:
     assert moved.bounds == (0.0, 0.0, 360.0, 0.0)
 
 
+def test_points_and_lines_on_the_cut_stay_put() -> None:
+    assert to_lon_360(Point(0.0, 10.0)).equals(Point(0.0, 10.0))
+    assert to_lon_180(Point(180.0, 10.0)).equals(Point(180.0, 10.0))
+    multi = to_lon_360(MultiPoint([(0.0, 10.0), (-5.0, 5.0)]))
+    assert sorted(point.x for point in multi.geoms) == [0.0, 355.0]
+    along = LineString([(0.0, -5.0), (0.0, 5.0)])
+    assert to_lon_360(along).equals(along)
+
+
+def test_empty_geometries_keep_their_type() -> None:
+    for empty in (Polygon(), MultiPolygon(), Point(), LineString()):
+        assert to_lon_360(empty).geom_type == empty.geom_type
+        assert to_lon_180(empty).is_empty
+
+
 def test_split_at_meridian_returns_input_when_not_crossing() -> None:
     poly = box(10, 10, 20, 20)
     assert split_at_meridian(poly, 0.0) == [poly]
@@ -109,3 +133,23 @@ def test_gdf_wrappers_keep_columns_index_and_crs() -> None:
     assert moved.crs == gdf.crs
     assert moved.geometry.iloc[0].bounds == (350.0, 0.0, 355.0, 5.0)
     assert to_lon_180_gdf(moved).geometry.iloc[0].equals(gdf.geometry.iloc[0])
+
+
+def test_gdf_wrappers_use_the_active_geometry_column() -> None:
+    gdf = gpd.GeoDataFrame(
+        {"name": ["a"]}, geometry=[box(-10, 0, -5, 5)], crs=WGS84
+    ).rename_geometry("geom")
+    moved = to_lon_360_gdf(gdf)
+    assert list(moved.columns) == ["name", "geom"]
+    assert moved.geometry.name == "geom"
+    assert moved.geometry.iloc[0].bounds == (350.0, 0.0, 355.0, 5.0)
+    assert moved.crs == gdf.crs
+
+
+def test_check_lon_180() -> None:
+    fine = gpd.GeoDataFrame(geometry=[box(-180, -10, 180, 10)], crs=WGS84)
+    check_lon_180(fine)
+    check_lon_180(fine.to_crs(WORLD_CYLINDRICAL_EQUAL_AREA))
+    check_lon_180(fine.iloc[:0])
+    with pytest.raises(ValueError, match="to_lon_180"):
+        check_lon_180(gpd.GeoDataFrame(geometry=[box(170, -20, 190, -10)], crs=WGS84))

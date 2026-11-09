@@ -60,6 +60,39 @@ def test_sub_grid_keeps_lattice(grid: BlockGrid) -> None:
     assert sub.bounds == (1000.0, 1000.0, 2000.0, 2000.0)
 
 
+@pytest.mark.parametrize(
+    ("transform", "size"),
+    [
+        (Affine(1 / 120, 0, -180.0, 0, -1 / 120, 60.0), 1200),
+        (Affine(0.1, 0, -73.3, 0, -0.1, 45.7), 400),
+    ],
+)
+def test_window_round_trips_sub_grid_bounds_on_any_lattice(transform: Affine, size: int) -> None:
+    grid = BlockGrid(crs=WGS84, transform=transform, height=size, width=size)
+    for offset in range(0, size - 100, 7):
+        window = Window(offset, offset, 100, 100)
+        assert grid.window(grid.sub(window).bounds) == window
+    assert grid.window(grid.bounds, clip=False) == Window(0, 0, size, size)
+
+
+def test_rowcol_puts_edge_coordinates_in_the_pixel_to_the_right_and_below() -> None:
+    grid = BlockGrid(
+        crs=WGS84, transform=Affine(1 / 120, 0, -180.0, 0, -1 / 120, 60.0), height=1200, width=1200
+    )
+    k = np.arange(1, 50)
+    rows, cols = grid.rowcol(-180.0 + k * (1 / 120), 60.0 - k * (1 / 120))
+    assert cols.tolist() == k.tolist()
+    assert rows.tolist() == k.tolist()
+
+
+def test_profile_refuses_nodata_the_dtype_cannot_hold(grid: BlockGrid) -> None:
+    with pytest.raises(ValueError, match="representable"):
+        grid.profile(dtype="int32")
+    with pytest.raises(ValueError, match="range"):
+        grid.profile(dtype="uint8", nodata=-1)
+    assert grid.profile(dtype="int32", nodata=None)["nodata"] is None
+
+
 def test_profile_untiled_for_small_grids_tiled_for_large() -> None:
     small = BlockGrid(crs=WGS84, transform=Affine(0.1, 0, 0, 0, -0.1, 10), height=64, width=64)
     assert "tiled" not in small.profile()

@@ -17,6 +17,7 @@ from pyproj import Transformer
 from rasterio.warp import Resampling, reproject
 
 from idd_spatial_analysis.crs import crs_equal
+from idd_spatial_analysis.frame.grid import pixel_quotient
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
@@ -28,9 +29,13 @@ _IMAGE_NDIM = 2
 
 
 def _floor_index(values: NDArray[Any], origin: float, step: float, size: int) -> NDArray[np.int32]:
-    """Pixel index of each coordinate along one axis; -1 when outside or not finite."""
+    """Pixel index of each coordinate along one axis; -1 when outside or not finite.
+
+    Uses the same edge tolerance as ``BlockGrid.rowcol``, so a centre that lands on a source
+    pixel edge takes the pixel to its right or below on every lattice.
+    """
     with np.errstate(invalid="ignore"):
-        index = np.floor((np.asarray(values, dtype=np.float64) - origin) / step)
+        index = np.floor(pixel_quotient(values, origin, step))
     valid = np.isfinite(index) & (index >= 0) & (index < size)
     return np.asarray(np.where(valid, index, _OUTSIDE), dtype=np.int32)
 
@@ -177,7 +182,8 @@ def reproject_to_grid(
 
     ``resampling`` names a rasterio method (``nearest``, ``bilinear``, ``average``, ``sum``,
     ...). ``nodata`` marks missing pixels in both source and output and must be representable
-    in the array's dtype; it is NaN by default, so integer arrays need an explicit value.
+    in the array's dtype; it is NaN by default, so integer arrays need an explicit value. With
+    ``nodata=None`` on a float array, target pixels the source does not reach are still NaN.
     """
     src = np.asarray(array)
     if src.ndim < _IMAGE_NDIM or src.shape[-2:] != grid.shape:
@@ -187,7 +193,8 @@ def reproject_to_grid(
         msg = f"integer array needs an integer nodata, got {nodata!r}"
         raise ValueError(msg)
     method = Resampling[resampling] if isinstance(resampling, str) else resampling
-    out = np.full((*src.shape[:-2], *target.shape), nodata, dtype=src.dtype)
+    fill = math.nan if nodata is None else nodata
+    out = np.full((*src.shape[:-2], *target.shape), fill, dtype=src.dtype)
     reproject(
         source=src,
         destination=out,
@@ -197,6 +204,7 @@ def reproject_to_grid(
         dst_transform=target.transform,
         dst_crs=target.crs,
         dst_nodata=nodata,
+        init_dest_nodata=nodata is not None,
         resampling=method,
     )
     return out

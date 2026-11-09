@@ -78,9 +78,11 @@ def test_read_window_disjoint_raises(population_tif: Path) -> None:
         read_window(population_tif, (10_000.0, 10_000.0, 11_000.0, 11_000.0))
 
 
-def _write_columns(path: Path, grid: BlockGrid, population: np.ndarray, cols: slice) -> None:
+def _write_columns(
+    path: Path, grid: BlockGrid, population: np.ndarray, cols: slice, *, nodata: float | None
+) -> None:
     sub = grid.sub(Window(cols.start, 0, cols.stop - cols.start, grid.height))
-    with rasterio.open(path, "w", **sub.profile()) as dst:
+    with rasterio.open(path, "w", **sub.profile(nodata=nodata)) as dst:
         dst.write(population[:, cols], 1)
 
 
@@ -88,8 +90,8 @@ def test_mosaic_of_two_halves_restores_the_block(
     tmp_path: Path, grid: BlockGrid, population: np.ndarray
 ) -> None:
     left, right = tmp_path / "left.tif", tmp_path / "right.tif"
-    _write_columns(left, grid, population, slice(0, 32))
-    _write_columns(right, grid, population, slice(32, 64))
+    _write_columns(left, grid, population, slice(0, 32), nodata=np.nan)
+    _write_columns(right, grid, population, slice(32, 64), nodata=np.nan)
     data, merged = mosaic([left, right], grid.bounds)
     assert merged.shape == grid.shape
     assert merged.transform == grid.transform
@@ -98,6 +100,48 @@ def test_mosaic_of_two_halves_restores_the_block(
     part, sub = mosaic([left, right], (3000.0, 3000.0, 3500.0, 3500.0))
     np.testing.assert_array_equal(part, population[29:34, 30:35])
     assert sub.bounds == (3000.0, 3000.0, 3500.0, 3500.0)
+
+
+def test_mosaic_pads_with_nan_when_no_nodata_is_declared(
+    tmp_path: Path, grid: BlockGrid, population: np.ndarray
+) -> None:
+    left, right = tmp_path / "left.tif", tmp_path / "right.tif"
+    _write_columns(left, grid, population, slice(0, 32), nodata=None)
+    _write_columns(right, grid, population, slice(32, 64), nodata=None)
+    data, merged = mosaic([left, right], (-200.0, -200.0, 6600.0, 6600.0))
+    assert merged.shape == (68, 68)
+    assert merged.bounds == (-200.0, -200.0, 6600.0, 6600.0)
+    assert np.isnan(data[:2, :]).all()
+    assert np.isnan(data[:, -2:]).all()
+    np.testing.assert_array_equal(data[2:66, 2:66], population)
+    assert (data[2:66, 22:26] == 0).all()  # genuine zeros survive the first-wins merge
+
+
+def test_mosaic_of_integer_rasters_needs_nodata(tmp_path: Path, grid: BlockGrid) -> None:
+    path = tmp_path / "ints.tif"
+    with rasterio.open(path, "w", **grid.profile(dtype="int16", nodata=None)) as dst:
+        dst.write(np.ones(grid.shape, dtype="int16"), 1)
+    with pytest.raises(ValueError, match="nodata"):
+        mosaic([path], grid.bounds)
+
+
+def test_mosaic_snaps_off_lattice_bounds_to_the_first_raster(
+    population_tif: Path, population: np.ndarray
+) -> None:
+    data, snapped = mosaic([population_tif], (40.0, 40.0, 1040.0, 1040.0))
+    assert snapped.bounds == (0.0, 0.0, 1100.0, 1100.0)
+    np.testing.assert_array_equal(data, population[53:64, 0:11])
+
+
+def test_mosaic_with_an_explicit_resolution_resamples(
+    population_tif: Path, grid: BlockGrid, population: np.ndarray
+) -> None:
+    data, coarse = mosaic([population_tif], grid.bounds, 200.0)
+    assert coarse.shape == (32, 32)
+    assert coarse.resolution == (200.0, 200.0)
+    finite = data[np.isfinite(data)]
+    assert finite.size > 0
+    assert np.isin(finite, population[np.isfinite(population)]).all()
 
 
 def test_mosaic_rejects_mixed_crs_and_nothing(
@@ -136,6 +180,34 @@ def test_write_geotiff_bands_and_integer_nodata(tmp_path: Path, grid: BlockGrid)
     narrowed = write_geotiff_atomic(tmp_path / "u8.tif", stack[0], grid, nodata=255, dtype="uint8")
     with rasterio.open(narrowed) as src:
         assert src.dtypes == ("uint8",)
+
+
+def test_narrowing_maps_nan_to_nodata_and_keeps_every_value(
+    tmp_path: Path, grid: BlockGrid, population: np.ndarray
+) -> None:
+    counts = np.floor(population)  # integral floats with the NaN corner
+    path = write_geotiff_atomic(tmp_path / "counts.tif", counts, grid, nodata=-1, dtype="int32")
+    with rasterio.open(path) as src:
+        back = src.read(1)
+        assert src.nodata == -1
+    missing = np.isnan(counts)
+    assert (back[missing] == -1).all()
+    np.testing.assert_array_equal(back[~missing], counts[~missing].astype("int32"))
+
+
+def test_narrowing_refuses_what_an_integer_cannot_hold(
+    tmp_path: Path, grid: BlockGrid, population: np.ndarray
+) -> None:
+    target = tmp_path / "x.tif"
+    with pytest.raises(ValueError, match="non-integral"):
+        write_geotiff_atomic(target, population, grid, nodata=-1, dtype="int32")
+    with pytest.raises(ValueError, match="no nodata"):
+        write_geotiff_atomic(target, np.floor(population), grid, nodata=None, dtype="int32")
+    with pytest.raises(ValueError, match="do not fit"):
+        write_geotiff_atomic(
+            target, np.full(grid.shape, 300, dtype="int32"), grid, nodata=255, dtype="uint8"
+        )
+    assert not target.exists()
 
 
 def test_write_geotiff_refuses_bad_nodata(tmp_path: Path, grid: BlockGrid) -> None:

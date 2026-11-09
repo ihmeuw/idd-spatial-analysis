@@ -10,6 +10,7 @@ from shapely.geometry import Point
 from idd_spatial_analysis.constants import BLOCK_KEY_COLUMN, WORLD_CYLINDRICAL_EQUAL_AREA
 from idd_spatial_analysis.crs import crs_equal, crs_string
 from idd_spatial_analysis.frame.grid import BlockGrid, grid_from_bounds
+from idd_spatial_analysis.geometry.antimeridian import check_lon_180
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -59,13 +60,15 @@ def block_grid(tiles: gpd.GeoDataFrame, block_key: str, resolution: float) -> Bl
 def blocks_intersecting(tiles: gpd.GeoDataFrame, polygons: gpd.GeoDataFrame) -> list[str]:
     """Keys of the blocks whose footprint intersects at least one polygon, sorted.
 
-    Polygons are reprojected to the tile index's CRS. Raises when no block qualifies, so a
-    bad input cannot silently skip every block.
+    Polygons are reprojected to the tile index's CRS; lon/lat polygons must be in the -180..180
+    convention (``geometry.to_lon_180``), or reprojection wraps them around the world. Raises
+    when no block qualifies, so a bad input cannot silently skip every block.
     """
     _check_tile_index(tiles, None)
     if polygons.crs is None:
         msg = "polygons carry no CRS"
         raise ValueError(msg)
+    check_lon_180(polygons)
     blocks = tiles[[BLOCK_KEY_COLUMN, "geometry"]].dissolve(by=BLOCK_KEY_COLUMN).reset_index()
     shapes = polygons[["geometry"]]
     if not crs_equal(polygons.crs, tiles.crs):

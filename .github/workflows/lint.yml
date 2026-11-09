@@ -13,4 +13,5 @@ jobs:
         with: { python-version: '3.12' }
       - run: uv sync --extra rasterra           # the extras the checks need; never --all-extras
       - run: uv run ruff check src/ tests/
+      - run: uv run ruff format --check src/ tests/
       - run: uv run mypy src/

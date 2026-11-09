@@ -13,7 +13,7 @@ results are small tables that `zonal.collate_blocks` adds up.
 | `NearestIndexMap`, same CRS (separable) | two 1-D int32 arrays, negligible |
 | `NearestIndexMap`, different CRS, no mask | two int32 arrays of the target shape, 82 MB for a block |
 | `NearestIndexMap` with a mask | proportional to the masked pixels, not the target |
-| `nearest_facility_distance` | pixel-centre coordinates of every zoned pixel (16 B per pixel) plus the KD-tree |
+| `nearest_facility_distance` | Earth-centred coordinates of every zoned pixel (24 B per pixel, per zone when `windows` are given) plus the KD-tree of the facilities |
 
 ## Strategies
 

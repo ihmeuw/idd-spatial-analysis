@@ -11,6 +11,7 @@ from shapely.geometry import box
 
 from idd_spatial_analysis.constants import ZONE_DTYPE, ZONE_NODATA
 from idd_spatial_analysis.crs import crs_equal
+from idd_spatial_analysis.geometry.antimeridian import check_lon_180
 
 if TYPE_CHECKING:
     import geopandas as gpd
@@ -29,10 +30,11 @@ def rasterize_zones(
 ) -> tuple[NDArray[np.int32], dict[int, Window]]:
     """Zone id per pixel (``0`` where no zone) and, per zone that got pixels, its window.
 
-    Ids must be positive, unique integers. Zones are reprojected to the grid's CRS. A pixel
-    belongs to the zone containing its centre (``all_touched=True``: any zone touching it);
-    where zones overlap, the later row in ``zones_gdf`` wins. A grid no zone reaches yields an
-    all-zero mask and no windows.
+    Ids must be positive, unique integers. Zones are reprojected to the grid's CRS (lon/lat
+    zones must be in the -180..180 convention). A pixel belongs to the zone containing its
+    centre (``all_touched=True``: any zone touching it); where zones overlap, the later row in
+    ``zones_gdf`` wins. A grid no zone reaches yields an all-zero mask and no windows; an empty
+    ``zones_gdf`` is an error.
     """
     if zone_col not in zones_gdf.columns:
         msg = f"zones lack column {zone_col!r}"
@@ -40,6 +42,10 @@ def rasterize_zones(
     if zones_gdf.crs is None:
         msg = "zones carry no CRS"
         raise ValueError(msg)
+    if zones_gdf.empty:
+        msg = "zones is empty"
+        raise ValueError(msg)
+    check_lon_180(zones_gdf)
     ids = zones_gdf[zone_col]
     if not pd.api.types.is_integer_dtype(ids):
         msg = f"zone ids must be integers, got {ids.dtype}"

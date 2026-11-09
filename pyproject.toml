@@ -20,7 +20,10 @@ dependencies = [
     "scipy>=1.15",
     "pyyaml>=6",
     "click>=8.0",
-    # Atomic file writes come from idd-tools (STANDARDS §I/O conventions); base extra only.
+    # Declared for the atomic writes of STANDARDS §I/O conventions, but not yet imported: the
+    # base install cannot import idd_tools.jobmon.atomic_io without the jobmon client, so
+    # raster/io.py carries a copy of atomic_write until idd-tools exposes it elsewhere
+    # (.claude/DECISIONS.md 2026-11-09).
     "idd-tools",
 ]
 
@@ -101,11 +104,12 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
-# tmp_path lives inside the repo (gitignored), never under the system temp directory.
-addopts = "--basetemp=.pytest_tmp"
+# tmp_path lives inside the repo (gitignored), never under the system temp directory. The
+# cluster-data checks run only when asked for: pytest tests/qc -m qc.
+addopts = "--basetemp=.pytest_tmp -m 'not qc'"
 markers = [
     "qc: checks against real cluster data; skipped unless paths.yaml points at it (tests/qc)",
 ]
 
 [tool.coverage.run]
-source = ["idd_spatial_analysis"]
+source = ["src"]

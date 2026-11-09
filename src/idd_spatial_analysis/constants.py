@@ -46,6 +46,12 @@ ZONE_DTYPE: Final = "int32"
 ZONE_NODATA: Final = 0
 GEOTIFF_BLOCKSIZE: Final = 512
 GEOTIFF_COMPRESSION: Final = "LZW"
+PIXEL_EDGE_DECIMALS: Final = 6
+"""Pixel-index quotients are rounded to this many decimals before floor or ceil, so a coordinate
+within a millionth of a pixel of an edge counts as on it. Grids with non-binary steps such as
+1/120 degree otherwise land one pixel off."""
+GEOCENTRIC_CRS: Final = "EPSG:4978"
+"""Earth-centred Cartesian metres; distances between points are measured here."""
 
 # Earth, for spherical cell areas (IUGG mean radius, km)
 EARTH_RADIUS_KM: Final = 6371.0088

@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 
 @pytest.fixture
 def raking_root(tmp_path: Path) -> Path:
+    """gbd_2023 shapes with a GeoParquet covering column, lsae_1285 shapes without one."""
     root = tmp_path / "raking"
     (root / "gbd-inputs").mkdir(parents=True)
     shapes = gpd.GeoDataFrame(
@@ -24,7 +25,7 @@ def raking_root(tmp_path: Path) -> Path:
         geometry=[box(0, 0, 10, 10), box(0, 0, 5, 10), box(5, 0, 10, 10)],
         crs=WGS84,
     )
-    shapes.to_parquet(root / "shapes_gbd_2023.parquet")
+    shapes.to_parquet(root / "shapes_gbd_2023.parquet", write_covering_bbox=True)
     population = pd.DataFrame(
         {
             "location_id": [100, 101, 102, 100, 101, 102],

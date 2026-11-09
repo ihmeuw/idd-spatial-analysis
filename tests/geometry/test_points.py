@@ -19,17 +19,20 @@ def test_points_get_their_zone_and_outside_is_na(zones_gdf: gpd.GeoDataFrame) ->
     )
     zones = points_to_zones(pts, zones_gdf, "zone")
     assert list(zones.index) == [3, 1, 2]
-    assert str(zones.dtype) == "Int64"
+    assert str(zones.dtype) == "Int32"
     assert zones.loc[3] == 3
     assert zones.loc[1] == 2
     assert pd.isna(zones.loc[2])
 
 
-def test_boundary_point_gets_exactly_one_zone(zones_gdf: gpd.GeoDataFrame) -> None:
+def test_boundary_points_need_intersects_and_take_the_first_zone(
+    zones_gdf: gpd.GeoDataFrame,
+) -> None:
     on_edge = gpd.GeoDataFrame(geometry=[Point(3200, 100)], crs=zones_gdf.crs)
-    zones = points_to_zones(on_edge, zones_gdf, "zone", predicate="intersects")
-    assert len(zones) == 1
-    assert zones.iloc[0] in {3, 4}
+    assert pd.isna(points_to_zones(on_edge, zones_gdf, "zone").iloc[0])
+    assert points_to_zones(on_edge, zones_gdf, "zone", predicate="intersects").iloc[0] == 3
+    reversed_zones = zones_gdf.iloc[::-1].reset_index(drop=True)
+    assert points_to_zones(on_edge, reversed_zones, "zone", predicate="intersects").iloc[0] == 4
 
 
 def test_points_are_reprojected(zones_gdf: gpd.GeoDataFrame) -> None:
@@ -48,3 +51,5 @@ def test_bad_inputs_raise(zones_gdf: gpd.GeoDataFrame) -> None:
     )
     with pytest.raises(ValueError, match="unique"):
         points_to_zones(dup, zones_gdf, "zone")
+    with pytest.raises(TypeError, match="integers"):
+        points_to_zones(pts, zones_gdf.assign(zone=zones_gdf["zone"].astype(float)), "zone")

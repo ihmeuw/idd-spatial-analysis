@@ -29,21 +29,26 @@ _SUM_COLUMNS = [WEIGHTED_SUM_COLUMN, WEIGHT_SUM_COLUMN]
 _IMAGE_NDIM = 2
 
 
-def _check_zone_arrays(mask: NDArray[Any], weight: NDArray[Any]) -> None:
+def check_zone_mask(mask: NDArray[Any]) -> None:
+    """Raise unless ``mask`` is a 2-D integer array."""
     if mask.ndim != _IMAGE_NDIM:
         msg = f"mask must be 2-D, got shape {mask.shape}"
         raise ValueError(msg)
     if mask.dtype.kind not in "iu":
         msg = f"mask must hold integer zone ids, got {mask.dtype}"
         raise TypeError(msg)
-    if weight.shape != mask.shape:
-        msg = f"weight shape {weight.shape} does not match the mask {mask.shape}"
-        raise ValueError(msg)
 
 
-def _present_zones(mask: NDArray[Any]) -> NDArray[np.int32]:
-    present = np.unique(mask)
-    return np.asarray(present[present != ZONE_NODATA], dtype=ZONE_DTYPE)
+def zone_index(mask: NDArray[Any]) -> tuple[NDArray[np.int32], NDArray[np.intp]]:
+    """The zone ids present (sorted, without ``0``) and each pixel's position in that list.
+
+    The position is meaningless for nodata pixels (it is ``0``), so callers mask those out.
+    Binning by position keeps the per-zone arrays as long as the number of zones, not as long
+    as the largest id, which can be two billion.
+    """
+    present = np.unique(mask[mask != ZONE_NODATA]).astype(ZONE_DTYPE)
+    index = np.searchsorted(present, mask.ravel())
+    return present, np.asarray(index, dtype=np.intp)
 
 
 def weighted_sums(
@@ -67,40 +72,41 @@ def weighted_sums(
     zone = np.asarray(mask)
     w = np.asarray(weight, dtype=np.float64)
     v = np.asarray(value)
-    _check_zone_arrays(zone, w)
+    check_zone_mask(zone)
+    if w.shape != zone.shape:
+        msg = f"weight shape {w.shape} does not match the mask {zone.shape}"
+        raise ValueError(msg)
     if v.ndim not in (2, 3) or v.shape[-2:] != zone.shape:
         msg = (
             f"value shape {v.shape} must be (rows, cols) or (slices, rows, cols) matching the mask"
         )
         raise ValueError(msg)
     stack = v.reshape(-1, *zone.shape)
-    present = _present_zones(zone)
+    present, index = zone_index(zone)
     frames: list[pd.DataFrame] = []
     if present.size:
-        n_bins = int(zone.max()) + 1
-        zone_flat = zone.ravel()
         w_flat = w.ravel()
-        base = (zone_flat != ZONE_NODATA) & np.isfinite(w_flat)
-        for index, slab in enumerate(stack):
+        base = (zone.ravel() != ZONE_NODATA) & np.isfinite(w_flat)
+        for slab_number, slab in enumerate(stack):
             v_flat = slab.astype(np.float64, copy=False).ravel()
             finite_v = np.isfinite(v_flat)
             counts_weight = base if nan_policy == "keep_weight" else base & finite_v
             counts_value = base & finite_v
             weight_sum = np.bincount(
-                zone_flat[counts_weight], weights=w_flat[counts_weight], minlength=n_bins
+                index[counts_weight], weights=w_flat[counts_weight], minlength=present.size
             )
             weighted = np.bincount(
-                zone_flat[counts_value],
+                index[counts_value],
                 weights=w_flat[counts_value] * v_flat[counts_value],
-                minlength=n_bins,
+                minlength=present.size,
             )
             frames.append(
                 pd.DataFrame(
                     {
                         ZONE_COLUMN: present,
-                        SLICE_COLUMN: np.full(present.size, index, dtype=ZONE_DTYPE),
-                        WEIGHTED_SUM_COLUMN: weighted[present],
-                        WEIGHT_SUM_COLUMN: weight_sum[present],
+                        SLICE_COLUMN: np.full(present.size, slab_number, dtype=ZONE_DTYPE),
+                        WEIGHTED_SUM_COLUMN: weighted,
+                        WEIGHT_SUM_COLUMN: weight_sum,
                     }
                 )
             )
@@ -124,7 +130,8 @@ def weighted_sums(
 def collate_blocks(frames: Iterable[pd.DataFrame]) -> pd.DataFrame:
     """Per-block ``weighted_sums`` tables added up by zone (and slice) across blocks.
 
-    Every column other than the two sums is a key; a zone that spans blocks gets one row.
+    Every column other than the two sums is a key; a zone that spans blocks gets one row. A
+    missing value in a key column is an error (pandas would drop the row without a word).
     """
     tables = list(frames)
     if not tables:
@@ -134,6 +141,10 @@ def collate_blocks(frames: Iterable[pd.DataFrame]) -> pd.DataFrame:
         require_columns(table, [ZONE_COLUMN, *_SUM_COLUMNS], "block table")
     stacked = pd.concat(tables, ignore_index=True)
     keys = [column for column in stacked.columns if column not in _SUM_COLUMNS]
+    holes = stacked[keys].isna().any()
+    if holes.any():
+        msg = f"key columns hold missing values: {holes[holes].index.tolist()}"
+        raise ValueError(msg)
     out = stacked.groupby(keys, as_index=False, sort=True)[_SUM_COLUMNS].sum()
     for key in keys:
         if pd.api.types.is_integer_dtype(stacked[key]):

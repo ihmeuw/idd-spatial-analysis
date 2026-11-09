@@ -10,8 +10,12 @@ Every function in the package assumes the conventions below. They are fixed in
 - `WGS84 = "EPSG:4326"`: what shapefiles, GPS points and climate grids arrive in.
 - `WORLD_CYLINDRICAL_EQUAL_AREA = "ESRI:54034"`: the population model's block frame. Metres,
   equal area, the CRS of the tile index and of every 100 m block.
-- Functions that need metres (`nearest_facility_distance`, metric cell areas) refuse a
-  geographic CRS instead of returning degrees.
+- Distances (`zonal.nearest_facility_distance`) are metres along the Earth's surface whatever
+  the grid's CRS: points are compared in Earth-centred coordinates (`GEOCENTRIC_CRS`,
+  EPSG:4978) and the chord is turned into an arc. Planar distances in the equal-area frame
+  are off by the cosine of the latitude (15 percent at 30 degrees), so they are never used.
+- Metric cell areas (`geometry.grid_cell_areas_km2`) need a metre CRS and refuse others;
+  lat/lon grids get exact spherical areas.
 
 ## Grids and rasters
 
@@ -21,7 +25,9 @@ Every function in the package assumes the conventions below. They are fixed in
   Row 0 is the northern (top) edge; latitude decreases down the rows.
 - Pixel `(row, col)` covers `[c + col*a, c + (col+1)*a)` in x and `(f + (row+1)*e, f + row*e]`
   in y. A point on a shared edge belongs to the pixel to its right or below it (floor), the
-  same rule rasterio uses.
+  same rule rasterio uses. "On the edge" allows a rounding error of `PIXEL_EDGE_DECIMALS`
+  (one millionth of a pixel), so the rule holds on lattices such as 1/120 degree whose edges
+  are not exact binary fractions.
 - Pixel centres sit half a pixel in from the edges; every nearest lookup and every
   rasterization decides membership by the centre.
 - Windows (`BlockGrid.window`) are integer `rasterio.windows.Window`s that cover the
@@ -44,9 +50,13 @@ Every function in the package assumes the conventions below. They are fixed in
   maps the file's nodata value to NaN unless `as_float=False`.
 - Zone masks are int32 with `0` for "no zone" (`ZONE_DTYPE`, `ZONE_NODATA`); zone ids are
   positive.
-- `raster.write_geotiff_atomic` refuses a nodata value the dtype cannot hold (NaN for an
-  integer raster), the mistake that produced the `nodata value, nan, is beyond the valid
-  range of its data type, int32` failure in older notebooks.
+- `BlockGrid.profile` and `raster.write_geotiff_atomic` refuse a nodata value the dtype
+  cannot hold (NaN for an integer raster), the mistake that produced the `nodata value, nan,
+  is beyond the valid range of its data type, int32` failure in older notebooks. Narrowing a
+  float array to an integer dtype maps NaN to the nodata value and refuses non-integral or
+  out-of-range values rather than wrapping them.
+- `raster.mosaic` pads pixels no tile covers with NaN (float) or the first tile's nodata;
+  integer tiles must declare one.
 - Zonal sums take a required `nan_policy`: `"keep_weight"` leaves a pixel's weight in the
   denominator when its value is NaN, `"drop_pixel"` removes the pixel from both sums. There is
   no default because the choice changes the result.
@@ -54,7 +64,14 @@ Every function in the package assumes the conventions below. They are fixed in
 ## Identifiers and tables
 
 - Admin codes (`ADM{level}_CODE`), zone ids and `location_id` are int32. `loc_id` from LBD
-  shapefiles may be missing and is pandas nullable `Int32`.
+  shapefiles may be missing and is pandas nullable `Int32`, as is the zone id
+  `geometry.points_to_zones` returns (`<NA>` outside every zone; a point on a boundary is
+  outside with the default `within` predicate and takes the first-listed zone with
+  `intersects`).
+- `nearest_facility_distance(..., within_zone=True)` reads each facility's zone from an
+  integer column the caller supplies (`facility_zone_col`), normally the output of
+  `points_to_zones` on the same polygons the mask came from, so facilities outside the block
+  still count for their zone and a facility without a zone is an error.
 - Zonal tables use the column names in `constants.py`: `zone`, `slice`, `weighted_sum`,
   `weight_sum`, `mean`, `coarse_row`, `coarse_col`, `weight`, `threshold`,
   `weight_within`, `weight_total`, `share`. Sums accumulate in float64.
@@ -68,4 +85,7 @@ Functions raise; they never skip or fill in. `ValueError` for inconsistent input
 `AntimeridianError` for a wrapping box and `PathsFileMissingError` for a missing
 `paths.yaml`. A block that no zone reaches is not an error: `rasterize_zones` returns an
 all-zero mask and `weighted_sums` an empty table, so a block loop can tell "nothing here"
-from "something broke".
+from "something broke". An empty zones table, a lon/lat table in the 0..360 convention, a
+missing key in a table to collate, duplicate or incomplete rows in a roll-up, and zoned
+pixels a coarse grid does not cover are errors, because each would otherwise produce a
+plausible wrong number.

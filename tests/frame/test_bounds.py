@@ -35,6 +35,16 @@ def test_antimeridian_wrap_is_refused() -> None:
     assert right - left < 2.0
 
 
+def test_boxes_straddling_the_antimeridian_are_refused() -> None:
+    # GDAL reports a crossing as left > right; both shapes must raise, not come back inside out.
+    with pytest.raises(AntimeridianError, match="antimeridian"):
+        bbox_in_crs(
+            (19_900_000.0, 0.0, 20_100_000.0, 100_000.0), WORLD_CYLINDRICAL_EQUAL_AREA, WGS84
+        )
+    with pytest.raises(AntimeridianError, match="antimeridian"):
+        bbox_in_crs((100_000.0, 6_000_000.0, 900_000.0, 6_500_000.0), "EPSG:32601", WGS84)
+
+
 def test_degenerate_bounds_raise() -> None:
     with pytest.raises(ValueError, match="degenerate"):
         bbox_in_crs((5.0, 0.0, 5.0, 1.0), WGS84, WORLD_CYLINDRICAL_EQUAL_AREA)

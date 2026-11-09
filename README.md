@@ -13,16 +13,17 @@ jobs (that is idd-tools).
 | `boundaries` | Admin polygons from a pinned release, population-model raking shapes and hierarchies | `AdminRelease`, `load_admin`, `copy_release`, `load_raking_shapes`, `load_hierarchy` |
 | `geometry` | Longitude conventions, bound strings, cell areas, points to zones | `to_lon_360`, `to_lon_180`, `split_antimeridian`, `parse_bound`, `cell_area_km2`, `grid_cell_areas_km2`, `points_to_zones` |
 | `raster` | Windows, mosaics, regridding, zone masks, atomic GeoTIFF writes | `read_window`, `mosaic`, `reproject_to_grid`, `NearestIndexMap`, `resample_masked`, `rasterize_zones`, `write_geotiff_atomic` |
-| `zonal` | Population-weighted sums, sparse zone weights, hierarchy roll-up, nearest facility | `weighted_sums`, `zone_weights`, `rollup_hierarchy`, `collate_blocks`, `nearest_facility_distance`, `share_within` |
+| `zonal` | Population-weighted sums, sparse zone weights, hierarchy roll-up, nearest facility (surface metres) | `weighted_sums`, `zone_weights`, `rollup_hierarchy`, `collate_blocks`, `nearest_facility_distance`, `share_within` |
 
 A raster is the pair `(array, BlockGrid)`: a 2-D numpy array and the grid that places it.
 Repos that keep their rasters as `rasterra.RasterArray` convert at the edge with
 `idd_spatial_analysis.raster.adapters` (install the `rasterra` extra).
 
-Each subpackage has a page under `docs/` and an import-only notebook under
-`notebooks/vignettes/` that runs on synthetic data in seconds. Start with
-`docs/conventions.md`: it fixes the CRS strings, the north-up grid convention, nodata handling
-and the integer id columns every function assumes.
+`docs/` holds four pages (`conventions`, `frame`, `boundaries`, `memory`) and every subpackage
+has an import-only notebook under `notebooks/vignettes/` that runs on synthetic data in
+seconds. Start with `docs/conventions.md`: it fixes the CRS strings, the north-up grid
+convention, the surface-distance rule, nodata handling and the integer id columns every
+function assumes.
 
 ## Install
 
@@ -56,8 +57,10 @@ reads it through `idd_spatial_analysis.paths.load_paths()`; every key in
 | `project_output_root` | This repo's output node | Written only by `idd-spatial materialize-admin-release`; list the key under `write:` to allow it |
 
 Loaders pin what they read: `AdminRelease(root, "YYYY_MM_DD")` names the release
-explicitly, `load_raking_shapes(root, "gbd_2023")` names the hierarchy. Nothing picks
-"the latest" for you.
+explicitly, `load_raking_shapes(root, "gbd_2023")` names the hierarchy. Nothing picks "the
+latest" for you; the one place a choice could hide, the year of the population file's
+most-detailed flags, is checked to be the same in every year, and `year_id` must be given
+when it is not.
 
 ## Use
 
@@ -66,19 +69,27 @@ from idd_spatial_analysis.paths import load_paths
 from idd_spatial_analysis.boundaries import AdminRelease, load_admin
 from idd_spatial_analysis.frame import block_grid, blocks_intersecting, load_tile_index
 from idd_spatial_analysis.raster import rasterize_zones, read_window
-from idd_spatial_analysis.zonal import weighted_sums
+from idd_spatial_analysis.zonal import collate_blocks, weighted_sums
 
 paths = load_paths()
 release = AdminRelease(paths["admin_shapefile_root"], "2024_07_29")
 adm2 = load_admin(release, 2, countries=[165])
+population_tif = paths["population_grid_root"] / "<your population raster>.tif"
+temperature_tif = paths["project_output_root"] / "<a value raster on the same frame>.tif"
 
 tiles = load_tile_index(paths["tile_index_root"] / "100m" / "tile_index.parquet")
+partials = []
 for block_key in blocks_intersecting(tiles, adm2):
     grid = block_grid(tiles, block_key, resolution=100.0)
-    population, _ = read_window(paths["population_grid_root"] / "population.tif", grid.bounds)
+    population, _ = read_window(population_tif, grid.bounds, boundless=True)
+    temperature, _ = read_window(temperature_tif, grid.bounds, boundless=True)
     mask, windows = rasterize_zones(adm2, "ADM2_CODE", grid)
-    sums = weighted_sums(mask, population, value, nan_policy="drop_pixel")
+    partials.append(weighted_sums(mask, population, temperature, nan_policy="drop_pixel"))
+sums = collate_blocks(partials)
 ```
+
+`boundless=True` pads a block at the raster's edge with NaN so every array has the block's
+shape; `collate_blocks` adds the partial sums of zones that straddle blocks.
 
 The command line has one command, `idd-spatial materialize-admin-release`, which copies a
 release under `project_output_root` for compute nodes that cannot see the archive mount.
@@ -87,15 +98,16 @@ release under `project_output_root` for compute nodes that cannot see the archiv
 ## Testing
 
 ```bash
-.venv/bin/pytest                               # synthetic data, runs anywhere
+.venv/bin/pytest                               # synthetic data, runs anywhere; tests/qc deselected
 .venv/bin/pytest tests/qc -m qc                # real cluster data; skipped without paths.yaml
 .venv/bin/ruff check src tests && .venv/bin/ruff format --check src tests
 .venv/bin/mypy src
 ```
 
 Every public function has a unit test under `tests/`, mirroring the source layout. `tests/qc`
-holds value-level checks against the cluster data named in `paths.yaml` and is excluded from
-CI. CI (`.github/workflows`) runs ruff, mypy and pytest in the locked environment.
+holds checks against the cluster data named in `paths.yaml` (schema, consistency, population
+conservation on one real block) and is excluded from CI. CI (`.github/workflows`) runs ruff
+check and format, mypy and pytest in the locked environment.
 
 ## Versions
 

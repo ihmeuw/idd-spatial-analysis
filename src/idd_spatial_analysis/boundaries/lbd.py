@@ -83,9 +83,9 @@ def load_admin(
 ) -> gpd.GeoDataFrame:
     """Admin units of one level from a pinned release, with integer codes.
 
-    ``countries`` restricts the read to those ``ADM0_CODE`` values before anything is loaded;
-    ``columns`` limits attribute columns (the admin code and name columns of ``level`` and the
-    country code are always included); ``crs`` reprojects the result.
+    ``countries`` restricts the read to those ``ADM0_CODE`` values before anything is loaded.
+    The code columns of every level up to ``level`` and the level's name column are always
+    read; ``columns`` adds more (``loc_id``, say). ``crs`` reprojects the result.
     """
     path = release.require(level)
     wanted = [*_code_columns(level), ADM_NAME_COLUMN.format(level=level)]

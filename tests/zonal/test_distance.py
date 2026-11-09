@@ -1,93 +1,168 @@
-"""Nearest-facility distances against brute force, and shares within thresholds."""
+"""Nearest-facility distances against geodesic brute force, and shares within thresholds."""
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import geopandas as gpd
 import numpy as np
+import pandas as pd
 import pytest
-from affine import Affine
+from pyproj import Geod, Transformer
+from shapely.geometry import Point
 
-from idd_spatial_analysis.constants import WGS84
-from idd_spatial_analysis.frame import BlockGrid
+from idd_spatial_analysis.constants import WGS84, WORLD_CYLINDRICAL_EQUAL_AREA
+from idd_spatial_analysis.frame import BlockGrid, bbox_in_crs, grid_from_bounds
 from idd_spatial_analysis.zonal import nearest_facility_distance, share_within
 
 if TYPE_CHECKING:
-    import geopandas as gpd
     from rasterio.windows import Window
+
+GEOD = Geod(ellps="WGS84")
 
 
 def _brute_force(
     grid: BlockGrid,
     mask: np.ndarray,
-    fx: np.ndarray,
-    fy: np.ndarray,
+    facilities_gdf: gpd.GeoDataFrame,
     facility_zone: np.ndarray | None,
 ) -> np.ndarray:
+    """Geodesic distance to the nearest (same-zone) facility, pixel by pixel, via pyproj.Geod."""
+    lonlat = facilities_gdf.to_crs(WGS84)
+    flon, flat = lonlat.geometry.x.to_numpy(), lonlat.geometry.y.to_numpy()
     xs, ys = grid.pixel_centers()
+    to_lonlat = Transformer.from_crs(grid.crs, WGS84, always_xy=True)
     out = np.full(grid.shape, np.nan)
     for row in range(grid.height):
         for col in range(grid.width):
             zone = mask[row, col]
             if zone == 0:
                 continue
-            chosen = slice(None) if facility_zone is None else facility_zone == zone
-            distances = np.hypot(fx[chosen] - xs[col], fy[chosen] - ys[row])
-            if distances.size:
-                out[row, col] = distances.min()
+            if facility_zone is None:
+                candidates_lon, candidates_lat = flon, flat
+            else:
+                keep = facility_zone == zone
+                candidates_lon, candidates_lat = flon[keep], flat[keep]
+            if candidates_lon.size == 0:
+                continue
+            lon, lat = to_lonlat.transform(xs[col], ys[row])
+            _, _, distance = GEOD.inv(
+                np.full(candidates_lon.size, lon),
+                np.full(candidates_lon.size, lat),
+                candidates_lon,
+                candidates_lat,
+            )
+            out[row, col] = distance.min()
     return out
 
 
-def test_any_facility_matches_brute_force(
+def test_any_facility_matches_geodesic_brute_force(
     grid: BlockGrid, mask: np.ndarray, facilities_gdf: gpd.GeoDataFrame
 ) -> None:
     got = nearest_facility_distance(mask, facilities_gdf, grid, within_zone=False)
     assert got.dtype == np.float32
-    expect = _brute_force(
-        grid, mask, facilities_gdf.geometry.x.to_numpy(), facilities_gdf.geometry.y.to_numpy(), None
+    np.testing.assert_allclose(got, _brute_force(grid, mask, facilities_gdf, None), rtol=1e-5)
+
+
+def test_distances_are_surface_metres_away_from_the_equator() -> None:
+    # A 100 m block near 20E 50N. Planar distances in the equal-area frame would be off by
+    # cos(latitude): 1.56 times too long east-west, 0.64 times too short north-south.
+    bounds = bbox_in_crs((20.0, 50.0, 20.1, 50.05), WGS84, WORLD_CYLINDRICAL_EQUAL_AREA)
+    grid = grid_from_bounds(bounds, 100.0, WORLD_CYLINDRICAL_EQUAL_AREA)
+    mask = np.ones(grid.shape, dtype="int32")
+    facility = gpd.GeoDataFrame(
+        {"zone": np.array([1], dtype="int32")}, geometry=[Point(20.05, 50.02)], crs=WGS84
     )
-    np.testing.assert_allclose(got, expect, rtol=1e-6)
+    got = nearest_facility_distance(mask, facility, grid, within_zone=False)
+    np.testing.assert_allclose(got, _brute_force(grid, mask, facility, None), rtol=1e-5)
+    xs, ys = grid.pixel_centers()
+    projected = facility.to_crs(grid.crs).geometry.iloc[0]
+    planar = np.hypot(xs[np.newaxis, :] - projected.x, ys[:, np.newaxis] - projected.y)
+    assert np.nanmax(np.abs(planar - got) / np.maximum(got, 1.0)) > 0.1
 
 
-def test_within_zone_uses_only_that_zones_facilities(
+def test_a_lonlat_grid_is_accepted_and_agrees_with_brute_force(
+    grid: BlockGrid, facilities_gdf: gpd.GeoDataFrame
+) -> None:
+    lonlat_grid = grid_from_bounds(grid.lonlat_bounds(), 0.0009, WGS84)
+    mask = np.ones(lonlat_grid.shape, dtype="int32")
+    got = nearest_facility_distance(mask, facilities_gdf, lonlat_grid, within_zone=False)
+    assert np.isfinite(got).all()
+    np.testing.assert_allclose(
+        got, _brute_force(lonlat_grid, mask, facilities_gdf, None), rtol=1e-5
+    )
+
+
+def test_within_zone_uses_the_facility_zone_column(
     grid: BlockGrid,
     mask_windows: tuple[np.ndarray, dict[int, Window]],
     facilities_gdf: gpd.GeoDataFrame,
 ) -> None:
     mask, windows = mask_windows
-    got = nearest_facility_distance(mask, facilities_gdf, grid, within_zone=True, windows=windows)
-    expect = _brute_force(
-        grid,
-        mask,
-        facilities_gdf.geometry.x.to_numpy(),
-        facilities_gdf.geometry.y.to_numpy(),
-        facilities_gdf["zone"].to_numpy(),
+    got = nearest_facility_distance(
+        mask, facilities_gdf, grid, within_zone=True, facility_zone_col="zone", windows=windows
     )
-    np.testing.assert_allclose(got, expect, rtol=1e-6)
+    expect = _brute_force(grid, mask, facilities_gdf, facilities_gdf["zone"].to_numpy())
+    np.testing.assert_allclose(got, expect, rtol=1e-5)
     assert np.isnan(got[mask == 3]).all()
     assert np.isfinite(got[mask == 1]).all()
-    without_windows = nearest_facility_distance(mask, facilities_gdf, grid, within_zone=True)
+    without_windows = nearest_facility_distance(
+        mask, facilities_gdf, grid, within_zone=True, facility_zone_col="zone"
+    )
     np.testing.assert_array_equal(got, without_windows)
+    nullable = facilities_gdf.assign(zone=pd.array([1, 1, 2, 4, 4, 4], dtype="Int32"))
+    again = nearest_facility_distance(
+        mask, nullable, grid, within_zone=True, facility_zone_col="zone"
+    )
+    np.testing.assert_array_equal(got, again)
 
 
-def test_outside_zones_is_nan_and_reprojected_facilities_agree(
+def test_facilities_outside_the_grid_or_on_a_border_count_for_their_zone(
     grid: BlockGrid, mask: np.ndarray, facilities_gdf: gpd.GeoDataFrame
 ) -> None:
-    holed = mask.copy()
-    holed[:, :5] = 0
-    got = nearest_facility_distance(holed, facilities_gdf, grid, within_zone=False)
-    assert np.isnan(got[:, :5]).all()
-    assert np.isfinite(got[:, 5:]).all()
-    lonlat = nearest_facility_distance(holed, facilities_gdf.to_crs(WGS84), grid, within_zone=False)
-    np.testing.assert_allclose(lonlat, got, rtol=1e-6)
+    beyond = gpd.GeoDataFrame(
+        {"zone": np.array([3], dtype="int32")}, geometry=[Point(-1000.0, 1000.0)], crs=grid.crs
+    )
+    with_outside = gpd.GeoDataFrame(
+        pd.concat([facilities_gdf[["zone", "geometry"]], beyond], ignore_index=True),
+        crs=grid.crs,
+    )
+    got = nearest_facility_distance(
+        mask, with_outside, grid, within_zone=True, facility_zone_col="zone"
+    )
+    assert np.isfinite(got[mask == 3]).all()
+    expect = _brute_force(grid, mask, with_outside, with_outside["zone"].to_numpy())
+    np.testing.assert_allclose(got, expect, rtol=1e-5)
+    border = gpd.GeoDataFrame(
+        {"zone": np.array([3], dtype="int32")}, geometry=[Point(3200.0, 3200.0)], crs=grid.crs
+    )
+    got = nearest_facility_distance(mask, border, grid, within_zone=True, facility_zone_col="zone")
+    assert np.isfinite(got[mask == 3]).all()
+    assert np.isnan(got[mask == 1]).all()
+
+
+def test_zone_column_rules(
+    grid: BlockGrid, mask: np.ndarray, facilities_gdf: gpd.GeoDataFrame
+) -> None:
+    with pytest.raises(ValueError, match="facility_zone_col"):
+        nearest_facility_distance(mask, facilities_gdf, grid, within_zone=True)
+    with pytest.raises(ValueError, match="only applies"):
+        nearest_facility_distance(
+            mask, facilities_gdf, grid, within_zone=False, facility_zone_col="zone"
+        )
+    with pytest.raises(KeyError, match="nope"):
+        nearest_facility_distance(
+            mask, facilities_gdf, grid, within_zone=True, facility_zone_col="nope"
+        )
+    unzoned = facilities_gdf.assign(zone=pd.array([1, None, 2, 4, 4, 4], dtype="Int32"))
+    with pytest.raises(ValueError, match="no zone"):
+        nearest_facility_distance(mask, unzoned, grid, within_zone=True, facility_zone_col="zone")
+    floats = facilities_gdf.assign(zone=facilities_gdf["zone"].astype(float))
+    with pytest.raises(TypeError, match="integers"):
+        nearest_facility_distance(mask, floats, grid, within_zone=True, facility_zone_col="zone")
 
 
 def test_bad_inputs(grid: BlockGrid, mask: np.ndarray, facilities_gdf: gpd.GeoDataFrame) -> None:
-    lonlat_grid = BlockGrid(
-        crs=WGS84, transform=Affine(0.001, 0, 0, 0, -0.001, 1), height=64, width=64
-    )
-    with pytest.raises(ValueError, match="projected"):
-        nearest_facility_distance(mask, facilities_gdf, lonlat_grid, within_zone=False)
     with pytest.raises(ValueError, match="CRS"):
         nearest_facility_distance(
             mask, facilities_gdf.set_crs(None, allow_override=True), grid, within_zone=False
@@ -100,6 +175,8 @@ def test_bad_inputs(grid: BlockGrid, mask: np.ndarray, facilities_gdf: gpd.GeoDa
         nearest_facility_distance(mask, polygons, grid, within_zone=False)
     with pytest.raises(ValueError, match="does not match"):
         nearest_facility_distance(mask[:10], facilities_gdf, grid, within_zone=False)
+    with pytest.raises(TypeError, match="integer"):
+        nearest_facility_distance(mask.astype(float), facilities_gdf, grid, within_zone=False)
 
 
 def test_share_within_matches_manual_sums(
@@ -110,7 +187,7 @@ def test_share_within_matches_manual_sums(
 ) -> None:
     mask, windows = mask_windows
     distance = nearest_facility_distance(
-        mask, facilities_gdf, grid, within_zone=True, windows=windows
+        mask, facilities_gdf, grid, within_zone=True, facility_zone_col="zone", windows=windows
     )
     table = share_within(distance, population, mask, [3000.0, 1000.0])
     assert list(table.columns) == ["zone", "threshold", "weight_within", "weight_total", "share"]
@@ -130,10 +207,16 @@ def test_share_within_matches_manual_sums(
     assert (table.loc[table["zone"] == 1, "share"] > 0).all()
 
 
-def test_share_within_bad_inputs_and_zero_weight(mask: np.ndarray, population: np.ndarray) -> None:
+def test_share_within_bad_inputs_zero_weight_and_large_ids(
+    mask: np.ndarray, population: np.ndarray
+) -> None:
     with pytest.raises(ValueError, match="empty"):
         share_within(population, population, mask, [])
     with pytest.raises(ValueError, match="share a shape"):
         share_within(population[:10], population, mask, [1.0])
     table = share_within(population, np.zeros_like(population), mask, [1.0])
     assert table["share"].isna().all()
+    huge = mask.copy()
+    huge[huge == 4] = 2_000_000_000
+    table = share_within(population, population, huge, [1.0])
+    assert table["zone"].tolist() == [1, 2, 3, 2_000_000_000]

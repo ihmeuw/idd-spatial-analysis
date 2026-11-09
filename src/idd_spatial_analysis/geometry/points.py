@@ -7,6 +7,8 @@ import pandas as pd
 
 from idd_spatial_analysis.crs import crs_equal
 
+_ZONE_ID_DTYPE = "Int32"
+
 
 def points_to_zones(
     points: gpd.GeoDataFrame,
@@ -15,10 +17,12 @@ def points_to_zones(
     *,
     predicate: str = "within",
 ) -> pd.Series:
-    """The zone id of each point, aligned to ``points.index``; ``<NA>`` where no zone contains it.
+    """The zone id of each point as nullable ``Int32``, aligned to ``points.index``.
 
-    Points are reprojected to the zones' CRS. A point matching several zones (on a shared
-    boundary, or overlapping zones) keeps the first match in ``zones`` order.
+    Points are reprojected to the zones' CRS. ``<NA>`` where no zone matches: with the default
+    ``predicate="within"`` that includes points on a zone boundary, since a boundary is not the
+    interior; ``predicate="intersects"`` counts them. A point matching several zones keeps the
+    zone that comes first in ``zones``.
     """
     if zone_col not in zones.columns:
         msg = f"zones lack column {zone_col!r}"
@@ -29,10 +33,16 @@ def points_to_zones(
     if points.index.has_duplicates:
         msg = "points index must be unique"
         raise ValueError(msg)
+    if not pd.api.types.is_integer_dtype(zones[zone_col]):
+        msg = f"zone ids must be integers, got {zones[zone_col].dtype}"
+        raise TypeError(msg)
     located = points[["geometry"]]
     if not crs_equal(points.crs, zones.crs):
         located = located.to_crs(zones.crs)
-    joined = gpd.sjoin(located, zones[[zone_col, "geometry"]], how="left", predicate=predicate)
-    first = joined[~joined.index.duplicated(keep="first")]
+    candidates = zones[[zone_col, "geometry"]].reset_index(drop=True)
+    joined = gpd.sjoin(located, candidates, how="left", predicate=predicate)
+    # index_right is the zone's position in ``zones``; a stable sort makes the earliest win.
+    ordered = joined.sort_values("index_right", kind="stable")
+    first = ordered[~ordered.index.duplicated(keep="first")]
     result = first[zone_col].reindex(points.index)
-    return pd.Series(result, name=zone_col).astype("Int64")
+    return pd.Series(result, name=zone_col).astype(_ZONE_ID_DTYPE)

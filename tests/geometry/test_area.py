@@ -20,6 +20,12 @@ def test_one_degree_rows_sum_to_the_sphere() -> None:
     assert areas[0] < areas[89]
 
 
+def test_rows_over_the_poles_get_the_cap_area() -> None:
+    cap = cell_area_km2(np.array([90.125, 89.875]), 1.0)
+    assert cap[0] > 0
+    assert cap[0] == pytest.approx(cell_area_km2(np.array([90.0, 89.875]), 1.0)[0])
+
+
 def test_rejects_bad_inputs() -> None:
     with pytest.raises(ValueError, match="1-D"):
         cell_area_km2(np.array([1.0]), 1.0)

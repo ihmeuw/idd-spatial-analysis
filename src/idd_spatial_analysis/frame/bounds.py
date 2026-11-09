@@ -28,9 +28,10 @@ def bbox_in_crs(bounds: Bounds, src_crs: str, dst_crs: str, *, densify_points: i
     """The box in ``dst_crs`` that covers ``bounds`` given in ``src_crs``.
 
     Edges are densified before reprojection. A result that is not finite means the bounds fall
-    outside the valid area of ``dst_crs``; a geographic result wider than 180 degrees means the
-    box wraps the antimeridian, and ``AntimeridianError`` is raised instead of returning a box
-    that spans the whole world.
+    outside the valid area of ``dst_crs``. A geographic result whose left edge is not west of
+    its right edge (how GDAL reports a crossing) or that is wider than 180 degrees means the box
+    wraps the antimeridian, and ``AntimeridianError`` is raised instead of returning a box that
+    is inside out or spans the world.
     """
     left, bottom, right, top = bounds
     if left >= right or bottom >= top:
@@ -43,7 +44,9 @@ def bbox_in_crs(bounds: Bounds, src_crs: str, dst_crs: str, *, densify_points: i
     if not all(math.isfinite(value) for value in result):
         msg = f"bounds {bounds} fall outside the valid area of {dst_crs}"
         raise ValueError(msg)
-    if is_geographic(dst_crs) and result[2] - result[0] > _HALF_WORLD_DEGREES:
+    if is_geographic(dst_crs) and (
+        result[0] >= result[2] or result[2] - result[0] > _HALF_WORLD_DEGREES
+    ):
         msg = f"bounds {bounds} wrap the antimeridian in {dst_crs}: {result}"
         raise AntimeridianError(msg)
     return result

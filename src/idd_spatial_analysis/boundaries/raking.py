@@ -19,6 +19,7 @@ import pyarrow.parquet as pq
 from shapely.geometry import box
 
 from idd_spatial_analysis.constants import LEVEL_COLUMN, LOCATION_ID_COLUMN, PARENT_ID_COLUMN
+from idd_spatial_analysis.tables import require_columns
 
 if TYPE_CHECKING:
     from idd_spatial_analysis.frame.bounds import Bounds
@@ -27,6 +28,8 @@ _GBD = re.compile(r"^gbd_\d{4}$")
 _LSAE = re.compile(r"^lsae_\d+$")
 _FHS = re.compile(r"^fhs_\d{4}$")
 _ID_DTYPE = "int32"
+_YEAR_COLUMN = "year_id"
+_MOST_DETAILED_COLUMN = "most_detailed"
 
 
 def _check_hierarchy_name(hierarchy: str) -> None:
@@ -54,12 +57,48 @@ def _read_shapes(path: Path, bounds: Bounds | None) -> gpd.GeoDataFrame:
     return shapes
 
 
+def _most_detailed(population: pd.DataFrame, name: str, year_id: int | None) -> pd.DataFrame:
+    """The ``location_id`` rows flagged most detailed, for ``year_id`` or, without one, for all years at once."""
+    require_columns(population, [LOCATION_ID_COLUMN, _YEAR_COLUMN, _MOST_DETAILED_COLUMN], name)
+    if year_id is not None:
+        rows = population.loc[population[_YEAR_COLUMN] == year_id]
+        if rows.empty:
+            msg = f"{name} has no rows for year_id={year_id}"
+            raise ValueError(msg)
+    else:
+        flags = population.groupby(LOCATION_ID_COLUMN)[_MOST_DETAILED_COLUMN]
+        varying = flags.max() != flags.min()
+        if varying.any():
+            msg = (
+                f"{name}: the most_detailed flag changes between years for "
+                f"{int(varying.sum())} locations; pass year_id to pick the year"
+            )
+            raise ValueError(msg)
+        rows = population
+    detailed = rows.loc[rows[_MOST_DETAILED_COLUMN] == 1, [LOCATION_ID_COLUMN]].drop_duplicates()
+    if detailed.empty:
+        msg = f"{name} flags no location as most detailed"
+        raise ValueError(msg)
+    return detailed
+
+
 def load_raking_shapes(
-    raking_root: Path, hierarchy: str, *, bounds: Bounds | None = None
+    raking_root: Path,
+    hierarchy: str,
+    *,
+    bounds: Bounds | None = None,
+    year_id: int | None = None,
 ) -> gpd.GeoDataFrame:
     """Most-detailed polygons of ``hierarchy`` with an ``int32`` ``location_id``.
 
-    ``bounds`` (in the file's CRS) filters at read time so a block task never loads the globe.
+    ``bounds`` (in the file's CRS) keeps the polygons intersecting a box: the read itself is
+    filtered when the file carries a GeoParquet covering column, and an exact intersects test
+    applies either way. With ``bounds`` an empty result means no polygon reaches the box;
+    without it an empty result is an error.
+
+    For ``gbd_*`` hierarchies the most-detailed flag comes from the population file; it is
+    normally the same in every year, and the function checks that rather than picking a year.
+    When the flag differs between years, ``year_id`` must name the year to use.
     """
     _check_hierarchy_name(hierarchy)
     root = Path(raking_root)
@@ -67,9 +106,12 @@ def load_raking_shapes(
         shapes = _read_shapes(root / "gbd-inputs" / f"shapes_{hierarchy}_a2.parquet", bounds)
     elif _GBD.match(hierarchy):
         shapes = _read_shapes(root / f"shapes_{hierarchy}.parquet", bounds)
-        population = pd.read_parquet(root / f"population_{hierarchy}.parquet")
-        latest = population.loc[population["year_id"] == population["year_id"].max()]
-        detailed = latest.loc[latest["most_detailed"] == 1, [LOCATION_ID_COLUMN]].drop_duplicates()
+        population_name = f"population_{hierarchy}.parquet"
+        population = pd.read_parquet(root / population_name)
+        detailed = _most_detailed(population, population_name, year_id)
+        if LOCATION_ID_COLUMN not in shapes.columns:
+            msg = f"raking shapes for {hierarchy} lack {LOCATION_ID_COLUMN!r}"
+            raise KeyError(msg)
         shapes = shapes.merge(detailed, on=LOCATION_ID_COLUMN, how="inner")
     else:
         msg = f"{hierarchy!r} has no shapes in the raking inputs; use its gbd parent"
@@ -77,6 +119,9 @@ def load_raking_shapes(
     if LOCATION_ID_COLUMN not in shapes.columns:
         msg = f"raking shapes for {hierarchy} lack {LOCATION_ID_COLUMN!r}"
         raise KeyError(msg)
+    if shapes.empty and bounds is None:
+        msg = f"no shape of {hierarchy} is a most-detailed location"
+        raise ValueError(msg)
     shapes[LOCATION_ID_COLUMN] = shapes[LOCATION_ID_COLUMN].astype(_ID_DTYPE)
     return shapes.reset_index(drop=True)
 
@@ -86,9 +131,6 @@ def load_hierarchy(raking_root: Path, hierarchy: str) -> pd.DataFrame:
     _check_hierarchy_name(hierarchy)
     table = pd.read_parquet(Path(raking_root) / "gbd-inputs" / f"hierarchy_{hierarchy}.parquet")
     required = [LOCATION_ID_COLUMN, PARENT_ID_COLUMN, LEVEL_COLUMN]
-    missing = [column for column in required if column not in table.columns]
-    if missing:
-        msg = f"hierarchy {hierarchy} lacks columns {missing}"
-        raise KeyError(msg)
+    require_columns(table, required, f"hierarchy {hierarchy}")
     out = table[required].astype(dict.fromkeys(required, _ID_DTYPE))
     return out.reset_index(drop=True)

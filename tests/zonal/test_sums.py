@@ -108,6 +108,28 @@ def test_bad_inputs(mask: np.ndarray, population: np.ndarray, value: np.ndarray)
         weighted_sums(mask[0], population[0], value[0], nan_policy="drop_pixel")
 
 
+def test_large_zone_ids_cost_nothing_extra(
+    grid: BlockGrid, population: np.ndarray, value: np.ndarray
+) -> None:
+    mask = np.full(grid.shape, 2_147_483_647, dtype="int32")
+    mask[:, :32] = 7
+    got = weighted_sums(mask, population, value, nan_policy="drop_pixel")
+    assert got["zone"].tolist() == [7, 2_147_483_647]
+    assert got["weight_sum"].iloc[0] == pytest.approx(
+        np.nansum(population[:, :32].astype(np.float64)), rel=1e-9
+    )
+
+
+def test_collate_refuses_missing_keys(
+    mask: np.ndarray, population: np.ndarray, value: np.ndarray
+) -> None:
+    table = weighted_sums(mask, population, np.stack([value, value]), nan_policy="drop_pixel")
+    holed = table.astype({"slice": "float64"})
+    holed.loc[0, "slice"] = np.nan
+    with pytest.raises(ValueError, match="missing values"):
+        collate_blocks([holed])
+
+
 def test_collate_blocks_adds_partial_sums(
     mask: np.ndarray, population: np.ndarray, value: np.ndarray
 ) -> None:

@@ -35,6 +35,13 @@ def test_write_list_is_kept_as_list(tmp_path: Path) -> None:
     assert paths["write"] == ["raking_root"]
 
 
+def test_blank_write_is_empty_and_a_non_list_write_is_refused(tmp_path: Path) -> None:
+    base = "\n".join(f"{key}: /x/{key}" for key in REQUIRED_KEYS)
+    assert load_paths(_write(tmp_path, base + "\nwrite:\n"))["write"] == []
+    with pytest.raises(TypeError, match="list"):
+        load_paths(_write(tmp_path, base + "\nwrite: raking_root\n"))
+
+
 def test_missing_required_key_raises(tmp_path: Path) -> None:
     body = "admin_shapefile_root: /x/a\n"
     with pytest.raises(KeyError, match="tile_index_root"):
