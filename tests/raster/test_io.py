@@ -216,6 +216,24 @@ def test_narrowing_lands_an_extreme_nodata_exactly(tmp_path: Path, grid: BlockGr
         )
 
 
+def test_narrowing_compares_wide_integers_exactly(tmp_path: Path, grid: BlockGrid) -> None:
+    # INT64_MAX rounds up to 2**63 as a float; the range check must not go through float().
+    top = np.iinfo("int64").max
+    data = np.full(grid.shape, top, dtype="uint64")
+    path = write_geotiff_atomic(tmp_path / "wide.tif", data, grid, nodata=None, dtype="int64")
+    with rasterio.open(path) as src:
+        assert src.dtypes == ("int64",)
+        assert int(src.read(1)[0, 0]) == top
+    with pytest.raises(ValueError, match="do not fit"):
+        write_geotiff_atomic(
+            tmp_path / "x.tif",
+            np.full(grid.shape, 2**63, dtype="uint64"),
+            grid,
+            nodata=None,
+            dtype="int64",
+        )
+
+
 def test_mosaic_with_a_resolution_covers_the_bounds(tmp_path: Path) -> None:
     tile_grid = BlockGrid(
         crs=WGS84, transform=Affine(1 / 120, 0, 10.0, 0, -1 / 120, 50.0), height=120, width=120

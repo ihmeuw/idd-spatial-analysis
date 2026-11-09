@@ -43,12 +43,16 @@ def check_nodata(dtype: str | np.dtype[Any], nodata: float | None) -> np.dtype[A
     out = np.dtype(dtype)
     if nodata is None or out.kind not in _INTEGER_KINDS:
         return out
-    value = float(nodata)
-    if not math.isfinite(value) or not value.is_integer():
-        msg = f"nodata {nodata!r} is not representable in {out.name}"
-        raise ValueError(msg)
+    if isinstance(nodata, int | np.integer):
+        value = int(nodata)  # exact at any width; float() would round above 2**53
+    else:
+        as_float = float(nodata)
+        if not math.isfinite(as_float) or not as_float.is_integer():
+            msg = f"nodata {nodata!r} is not representable in {out.name}"
+            raise ValueError(msg)
+        value = int(as_float)
     info = np.iinfo(out)
-    if not info.min <= int(value) <= info.max:
+    if not info.min <= value <= info.max:
         msg = f"nodata {nodata!r} is outside the range of {out.name}"
         raise ValueError(msg)
     return out

@@ -187,7 +187,9 @@ def _narrow(data: NDArray[Any], out_dtype: np.dtype[Any], nodata: float | None) 
         msg = f"array holds non-integral values; round it explicitly before writing as {out_dtype.name}"
         raise ValueError(msg)
     info = np.iinfo(out_dtype)
-    if values.size and (float(values.min()) < info.min or float(values.max()) > info.max):
+    # Every remaining value is integral, so int() is exact for any width; float() would round
+    # integers above 2**53 and refuse a uint64 INT64_MAX that fits int64.
+    if values.size and (int(values.min()) < info.min or int(values.max()) > info.max):
         msg = (
             f"values {values.min()}..{values.max()} do not fit {out_dtype.name} "
             f"({info.min}..{info.max})"

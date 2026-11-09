@@ -94,6 +94,11 @@ def test_check_nodata_and_pixel_quotient() -> None:
         check_nodata("int16", 1.5)
     with pytest.raises(ValueError, match="range"):
         check_nodata("int16", 40_000)
+    assert check_nodata("int64", np.iinfo("int64").max) == np.dtype("int64")
+    assert check_nodata("uint64", np.iinfo("uint64").max) == np.dtype("uint64")
+    assert check_nodata("int64", np.int64(-5)) == np.dtype("int64")
+    with pytest.raises(ValueError, match="range"):
+        check_nodata("int64", 2**63)
     quotient = pixel_quotient(np.array([0.0, 100.0 - 1e-9, 250.0]), 0.0, 100.0)
     assert quotient.tolist() == [0.0, 1.0, 2.5]
     assert pixel_quotient(6300.0, 6400.0, -100.0) == 1.0
