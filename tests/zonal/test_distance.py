@@ -11,14 +11,44 @@ import pytest
 from pyproj import Geod, Transformer
 from shapely.geometry import Point
 
-from idd_spatial_analysis.constants import WGS84, WORLD_CYLINDRICAL_EQUAL_AREA
+from idd_spatial_analysis.constants import EARTH_RADIUS_KM, WGS84, WORLD_CYLINDRICAL_EQUAL_AREA
 from idd_spatial_analysis.frame import BlockGrid, bbox_in_crs, grid_from_bounds
 from idd_spatial_analysis.zonal import nearest_facility_distance, share_within
+from idd_spatial_analysis.zonal.distance import _chord_to_arc
 
 if TYPE_CHECKING:
     from rasterio.windows import Window
 
 GEOD = Geod(ellps="WGS84")
+EARTH_RADIUS_M = EARTH_RADIUS_KM * 1000.0
+
+
+def test_chord_to_arc_is_pinned() -> None:
+    for arc in (1_000_000.0, 5_000_000.0):
+        chord = 2 * EARTH_RADIUS_M * np.sin(arc / (2 * EARTH_RADIUS_M))
+        assert _chord_to_arc(np.array([chord]))[0] == pytest.approx(arc, rel=1e-9)
+    half_turn = np.pi * EARTH_RADIUS_M
+    assert _chord_to_arc(np.array([2 * EARTH_RADIUS_M]))[0] == pytest.approx(half_turn, rel=1e-9)
+    assert _chord_to_arc(np.array([3 * EARTH_RADIUS_M]))[0] == pytest.approx(half_turn, rel=1e-9)
+
+
+def test_a_far_facility_needs_the_arc_correction(grid: BlockGrid, mask: np.ndarray) -> None:
+    # About 500 km from the block: the chord is shorter than the arc by one part in 4000, so a
+    # chord returned as is would miss the tolerance here by a factor of ten.
+    far = gpd.GeoDataFrame(
+        {"zone": np.array([1], dtype="int32")}, geometry=[Point(4.5, 0.03)], crs=WGS84
+    )
+    got = nearest_facility_distance(mask, far, grid, within_zone=False)
+    np.testing.assert_allclose(got, _brute_force(grid, mask, far, None), rtol=2e-5)
+    assert 450_000 < np.nanmin(got) < 550_000
+
+
+def test_facility_zone_zero_is_refused(
+    grid: BlockGrid, mask: np.ndarray, facilities_gdf: gpd.GeoDataFrame
+) -> None:
+    zeroed = facilities_gdf.assign(zone=np.array([0, 1, 2, 4, 4, 4], dtype="int32"))
+    with pytest.raises(ValueError, match="no zone"):
+        nearest_facility_distance(mask, zeroed, grid, within_zone=True, facility_zone_col="zone")
 
 
 def _brute_force(
@@ -99,18 +129,24 @@ def test_within_zone_uses_the_facility_zone_column(
     facilities_gdf: gpd.GeoDataFrame,
 ) -> None:
     mask, windows = mask_windows
+    # The first facility sits in the zone-1 quadrant but is labelled 2: the column, not the
+    # mask pixel under the facility, decides which zone it serves.
+    labels = np.array([2, 1, 2, 4, 4, 4], dtype="int32")
+    labelled = facilities_gdf.assign(zone=labels)
     got = nearest_facility_distance(
-        mask, facilities_gdf, grid, within_zone=True, facility_zone_col="zone", windows=windows
+        mask, labelled, grid, within_zone=True, facility_zone_col="zone", windows=windows
     )
-    expect = _brute_force(grid, mask, facilities_gdf, facilities_gdf["zone"].to_numpy())
+    expect = _brute_force(grid, mask, labelled, labels)
     np.testing.assert_allclose(got, expect, rtol=1e-5)
     assert np.isnan(got[mask == 3]).all()
     assert np.isfinite(got[mask == 1]).all()
+    under_mask = _brute_force(grid, mask, facilities_gdf, facilities_gdf["zone"].to_numpy())
+    assert not np.array_equal(got, under_mask, equal_nan=True)
     without_windows = nearest_facility_distance(
-        mask, facilities_gdf, grid, within_zone=True, facility_zone_col="zone"
+        mask, labelled, grid, within_zone=True, facility_zone_col="zone"
     )
     np.testing.assert_array_equal(got, without_windows)
-    nullable = facilities_gdf.assign(zone=pd.array([1, 1, 2, 4, 4, 4], dtype="Int32"))
+    nullable = labelled.assign(zone=pd.array(labels, dtype="Int32"))
     again = nearest_facility_distance(
         mask, nullable, grid, within_zone=True, facility_zone_col="zone"
     )

@@ -17,7 +17,12 @@ from rasterio.merge import merge
 from idd_spatial_analysis.constants import RASTER_FLOAT_DTYPE
 from idd_spatial_analysis.crs import crs_equal
 from idd_spatial_analysis.frame.bounds import bbox_in_crs
-from idd_spatial_analysis.frame.grid import BlockGrid, check_nodata, grid_from_raster
+from idd_spatial_analysis.frame.grid import (
+    BlockGrid,
+    check_nodata,
+    grid_from_bounds,
+    grid_from_raster,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -90,11 +95,12 @@ def mosaic(  # noqa: PLR0913  (keyword-only read options)
     """One array covering ``bounds`` merged from several rasters in the same CRS.
 
     Tiles are merged first-wins in the order given. Without ``resolution`` the output lies on
-    the first raster's lattice and covers ``bounds`` entirely, the grid ``read_window`` would
-    give for the same bounds; with one, the output grid starts at the top-left of ``bounds``
-    and the merge is a nearest-neighbour resample. Pixels no raster covers hold the first
-    raster's nodata value, or NaN when a float raster declares none; integer rasters must
-    declare one.
+    the first raster's lattice and covers ``bounds`` entirely, the grid
+    ``read_window(..., boundless=True)`` would give for the same bounds (it is not clipped to
+    the first raster); with one, the output grid is ``grid_from_bounds(bounds, resolution)``,
+    whole pixels from the top-left of ``bounds``, and the merge is a nearest-neighbour
+    resample. Pixels no raster covers hold the first raster's nodata value, or NaN when a
+    float raster declares none; integer rasters must declare one.
     """
     files = [Path(path) for path in paths]
     if not files:
@@ -108,12 +114,11 @@ def mosaic(  # noqa: PLR0913  (keyword-only read options)
             raise ValueError(msg)
     if bounds_crs is not None:
         bounds = bbox_in_crs(bounds, bounds_crs, first_grid.crs)
-    res: float | tuple[float, float]
     if resolution is None:
         target = first_grid.sub(first_grid.window(bounds, clip=False))
-        bounds, res = target.bounds, first_grid.resolution
     else:
-        res = resolution
+        target = grid_from_bounds(bounds, resolution, first_grid.crs)
+    bounds, res = target.bounds, target.resolution
     with rasterio.open(files[0]) as first:
         nodata = first.nodata
         dtype = np.dtype(first.dtypes[band - 1])
@@ -162,32 +167,38 @@ def _narrow(data: NDArray[Any], out_dtype: np.dtype[Any], nodata: float | None) 
 
     For an integer target: NaN and infinite pixels become ``nodata`` (refused when there is
     none), non-integral values are refused (round explicitly), and values outside the dtype's
-    range are refused. Float targets cast as numpy does.
+    range are refused. The checks and the nodata fill happen outside the array's float type,
+    so a nodata the float cannot hold exactly (INT_MAX in float32) still lands exactly. Float
+    targets cast as numpy does.
     """
     if data.dtype == out_dtype:
         return data
     if out_dtype.kind not in _INTEGER_KINDS:
         return data.astype(out_dtype)
-    values = data
-    if values.dtype.kind == "f":
-        finite = np.isfinite(values)
-        if not finite.all():
-            if nodata is None:
-                msg = (
-                    f"array holds NaN or infinite pixels and no nodata is given to stand for "
-                    f"them in {out_dtype.name}"
-                )
-                raise ValueError(msg)
-            values = np.where(finite, values, nodata)
-        if not np.array_equal(values, np.floor(values)):
-            msg = f"array holds non-integral values; round it explicitly before writing as {out_dtype.name}"
-            raise ValueError(msg)
-    info = np.iinfo(out_dtype)
-    low, high = values.min(), values.max()
-    if low < info.min or high > info.max:
-        msg = f"values {low}..{high} do not fit {out_dtype.name} ({info.min}..{info.max})"
+    finite = np.isfinite(data) if data.dtype.kind == "f" else np.ones(data.shape, dtype=bool)
+    if not finite.all() and nodata is None:
+        msg = (
+            f"array holds NaN or infinite pixels and no nodata is given to stand for them "
+            f"in {out_dtype.name}"
+        )
         raise ValueError(msg)
-    return values.astype(out_dtype)
+    values = data[finite]
+    if data.dtype.kind == "f" and not np.array_equal(values, np.floor(values)):
+        msg = f"array holds non-integral values; round it explicitly before writing as {out_dtype.name}"
+        raise ValueError(msg)
+    info = np.iinfo(out_dtype)
+    if values.size and (float(values.min()) < info.min or float(values.max()) > info.max):
+        msg = (
+            f"values {values.min()}..{values.max()} do not fit {out_dtype.name} "
+            f"({info.min}..{info.max})"
+        )
+        raise ValueError(msg)
+    out = np.full(data.shape, 0 if nodata is None else nodata, dtype=out_dtype)
+    out[finite] = values.astype(out_dtype)
+    if not np.array_equal(out[finite].astype(data.dtype), values):
+        msg = f"values change when cast to {out_dtype.name}; cast them explicitly first"
+        raise ValueError(msg)
+    return out
 
 
 def _check_header(path: Path, grid: BlockGrid, dtype: np.dtype[Any], count: int) -> None:

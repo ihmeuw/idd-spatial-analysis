@@ -2,19 +2,16 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 import geopandas as gpd
 import numpy as np
 import pytest
+from affine import Affine
 from rasterio.windows import Window
 from shapely.geometry import box
 
 from idd_spatial_analysis.constants import WGS84
+from idd_spatial_analysis.frame import BlockGrid
 from idd_spatial_analysis.raster import rasterize_zones
-
-if TYPE_CHECKING:
-    from idd_spatial_analysis.frame import BlockGrid
 
 
 def test_quadrants_mask_and_windows(grid: BlockGrid, zones_gdf: gpd.GeoDataFrame) -> None:
@@ -82,6 +79,18 @@ def test_empty_zones_and_0_360_longitudes_are_refused(
     )
     with pytest.raises(ValueError, match="to_lon_180"):
         rasterize_zones(wrapped, "zone", grid)
+
+
+def test_zones_already_in_the_grid_crs_are_burned_as_they_are() -> None:
+    lon360 = BlockGrid(
+        crs=WGS84, transform=Affine(0.5, 0, 160.0, 0, -0.5, 0.0), height=60, width=80
+    )
+    zones = gpd.GeoDataFrame(
+        {"zone": np.array([1], dtype="int32")}, geometry=[box(170, -20, 190, -10)], crs=WGS84
+    )
+    mask, windows = rasterize_zones(zones, "zone", lon360)
+    assert (mask == 1).sum() == 800
+    assert windows == {1: Window(20, 20, 40, 20)}
 
 
 def test_bad_ids_and_inputs(grid: BlockGrid, zones_gdf: gpd.GeoDataFrame) -> None:

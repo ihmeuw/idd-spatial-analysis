@@ -56,6 +56,12 @@ def test_blocks_intersecting_refuses_to_skip_everything(tile_index_gdf: gpd.GeoD
         blocks_intersecting(tile_index_gdf, no_crs)
 
 
+def test_blocks_intersecting_refuses_0_360_polygons(tile_index_gdf: gpd.GeoDataFrame) -> None:
+    wrapped = gpd.GeoDataFrame(geometry=[box(170, 0, 190, 0.05)], crs=WGS84)
+    with pytest.raises(ValueError, match="to_lon_180"):
+        blocks_intersecting(tile_index_gdf, wrapped)
+
+
 def test_block_for_point(tile_index_gdf: gpd.GeoDataFrame) -> None:
     assert block_for_point(tile_index_gdf, 100.0, 100.0, str(tile_index_gdf.crs)) == "B-0000X-0000Y"
     assert (

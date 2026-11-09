@@ -10,6 +10,7 @@ from rasterio.windows import Window
 
 from idd_spatial_analysis.constants import WGS84, WORLD_CYLINDRICAL_EQUAL_AREA
 from idd_spatial_analysis.frame import BlockGrid, grid_from_bounds, grid_from_raster
+from idd_spatial_analysis.frame.grid import check_nodata, pixel_quotient
 
 
 def test_shape_resolution_bounds(grid: BlockGrid) -> None:
@@ -83,6 +84,19 @@ def test_rowcol_puts_edge_coordinates_in_the_pixel_to_the_right_and_below() -> N
     rows, cols = grid.rowcol(-180.0 + k * (1 / 120), 60.0 - k * (1 / 120))
     assert cols.tolist() == k.tolist()
     assert rows.tolist() == k.tolist()
+
+
+def test_check_nodata_and_pixel_quotient() -> None:
+    assert check_nodata("float32", np.nan) == np.dtype("float32")
+    assert check_nodata("int32", None) == np.dtype("int32")
+    assert check_nodata("uint8", 255) == np.dtype("uint8")
+    with pytest.raises(ValueError, match="representable"):
+        check_nodata("int16", 1.5)
+    with pytest.raises(ValueError, match="range"):
+        check_nodata("int16", 40_000)
+    quotient = pixel_quotient(np.array([0.0, 100.0 - 1e-9, 250.0]), 0.0, 100.0)
+    assert quotient.tolist() == [0.0, 1.0, 2.5]
+    assert pixel_quotient(6300.0, 6400.0, -100.0) == 1.0
 
 
 def test_profile_refuses_nodata_the_dtype_cannot_hold(grid: BlockGrid) -> None:

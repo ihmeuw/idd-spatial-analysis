@@ -96,6 +96,13 @@ def test_points_and_lines_on_the_cut_stay_put() -> None:
     assert to_lon_360(along).equals(along)
 
 
+def test_lines_crossing_the_seam_move_whatever_their_vertex_order() -> None:
+    for line in (LineString([(170, 0), (190, 0)]), LineString([(190, 0), (170, 0)])):
+        moved = to_lon_180(line)
+        assert moved.bounds == (-180.0, 0.0, 180.0, 0.0)
+        assert moved.length == pytest.approx(20.0)
+
+
 def test_empty_geometries_keep_their_type() -> None:
     for empty in (Polygon(), MultiPolygon(), Point(), LineString()):
         assert to_lon_360(empty).geom_type == empty.geom_type

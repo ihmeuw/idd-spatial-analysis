@@ -97,7 +97,14 @@ def _facility_zones(facilities_gdf: gpd.GeoDataFrame, column: str) -> NDArray[np
     if not pd.api.types.is_integer_dtype(zones.dtype):
         msg = f"facility zones must be integers, got {zones.dtype}"
         raise TypeError(msg)
-    return np.asarray(zones.to_numpy(dtype=np.int64))
+    values = np.asarray(zones.to_numpy(dtype=np.int64))
+    if (values <= ZONE_NODATA).any():
+        msg = (
+            f"{int((values <= ZONE_NODATA).sum())} facilities have a zone of {ZONE_NODATA} or "
+            f"less in {column!r}; zone ids are positive and {ZONE_NODATA} means no zone"
+        )
+        raise ValueError(msg)
+    return values
 
 
 def _zone_pixels(

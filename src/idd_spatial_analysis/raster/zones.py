@@ -30,11 +30,13 @@ def rasterize_zones(
 ) -> tuple[NDArray[np.int32], dict[int, Window]]:
     """Zone id per pixel (``0`` where no zone) and, per zone that got pixels, its window.
 
-    Ids must be positive, unique integers. Zones are reprojected to the grid's CRS (lon/lat
-    zones must be in the -180..180 convention). A pixel belongs to the zone containing its
-    centre (``all_touched=True``: any zone touching it); where zones overlap, the later row in
-    ``zones_gdf`` wins. A grid no zone reaches yields an all-zero mask and no windows; an empty
-    ``zones_gdf`` is an error.
+    Ids must be positive, unique integers. Zones in another CRS are reprojected to the grid's;
+    lon/lat zones that need reprojecting must be in the -180..180 convention, while zones
+    already in the grid's CRS (a 0..360 table on a 0..360 grid, say) are burned as they are. A
+    pixel belongs to the zone containing its centre (``all_touched=True``: any zone touching
+    it); where zones overlap, the later row in ``zones_gdf`` wins, the same rule as
+    ``geometry.points_to_zones``. A grid no zone reaches yields an all-zero mask and no
+    windows; an empty ``zones_gdf`` is an error.
     """
     if zone_col not in zones_gdf.columns:
         msg = f"zones lack column {zone_col!r}"
@@ -45,7 +47,6 @@ def rasterize_zones(
     if zones_gdf.empty:
         msg = "zones is empty"
         raise ValueError(msg)
-    check_lon_180(zones_gdf)
     ids = zones_gdf[zone_col]
     if not pd.api.types.is_integer_dtype(ids):
         msg = f"zone ids must be integers, got {ids.dtype}"
@@ -60,6 +61,7 @@ def rasterize_zones(
 
     zones = zones_gdf[[zone_col, "geometry"]]
     if not crs_equal(zones.crs, grid.crs):
+        check_lon_180(zones)  # reprojection is what wraps a 0..360 polygon around the world
         zones = zones.to_crs(grid.crs)
     hit = zones.loc[zones.intersects(box(*grid.bounds)) & ~zones.geometry.is_empty]
     mask = np.full(grid.shape, ZONE_NODATA, dtype=ZONE_DTYPE)

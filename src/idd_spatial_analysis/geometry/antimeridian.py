@@ -84,7 +84,9 @@ def _shift_far_side(
     pieces = split_at_meridian(geom, cut_at)
     moved: list[BaseGeometry] = []
     for piece in pieces:
-        anchor = piece.representative_point().x
+        # Every piece lies on one side of the cut (or along it), so the midpoint of its
+        # x-extent is strictly on that side; a representative point could sit on the cut.
+        anchor = (piece.bounds[0] + piece.bounds[2]) / 2
         far = anchor < cut_at if far_side_is_west else anchor > cut_at
         moved.append(affinity.translate(piece, xoff=shift) if far else piece)
     return moved

@@ -30,13 +30,16 @@ _IMAGE_NDIM = 2
 
 
 def check_zone_mask(mask: NDArray[Any]) -> None:
-    """Raise unless ``mask`` is a 2-D integer array."""
+    """Raise unless ``mask`` is a 2-D integer array of non-negative ids (``0`` = no zone)."""
     if mask.ndim != _IMAGE_NDIM:
         msg = f"mask must be 2-D, got shape {mask.shape}"
         raise ValueError(msg)
     if mask.dtype.kind not in "iu":
         msg = f"mask must hold integer zone ids, got {mask.dtype}"
         raise TypeError(msg)
+    if mask.size and mask.min() < ZONE_NODATA:
+        msg = f"mask holds negative ids (down to {mask.min()}); zone ids are positive, 0 is no zone"
+        raise ValueError(msg)
 
 
 def zone_index(mask: NDArray[Any]) -> tuple[NDArray[np.int32], NDArray[np.intp]]:

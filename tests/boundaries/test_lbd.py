@@ -18,6 +18,11 @@ def test_release_paths(release: AdminRelease) -> None:
     simplified = AdminRelease(release.root, release.release, simplified=True)
     assert simplified.path(0).name == "lbd_standard_admin_0_simplified.shp"
     assert simplified.disputed_path().name == "lbd_disputed_mask_simplified.shp"
+    assert release.suffix == ""
+    assert simplified.suffix == "_simplified"
+    assert release.require(2) == release.path(2)
+    with pytest.raises(FileNotFoundError, match="2024_07_29"):
+        AdminRelease(release.root / "nowhere", release.release).require(0)
     with pytest.raises(ValueError, match="admin level"):
         release.path(3)
 

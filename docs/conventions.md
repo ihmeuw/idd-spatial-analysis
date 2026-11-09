@@ -66,8 +66,8 @@ Every function in the package assumes the conventions below. They are fixed in
 - Admin codes (`ADM{level}_CODE`), zone ids and `location_id` are int32. `loc_id` from LBD
   shapefiles may be missing and is pandas nullable `Int32`, as is the zone id
   `geometry.points_to_zones` returns (`<NA>` outside every zone; a point on a boundary is
-  outside with the default `within` predicate and takes the first-listed zone with
-  `intersects`).
+  outside with the default `within` predicate and, with `intersects`, takes the zone listed
+  last, the same rule `rasterize_zones` applies to overlapping polygons).
 - `nearest_facility_distance(..., within_zone=True)` reads each facility's zone from an
   integer column the caller supplies (`facility_zone_col`), normally the output of
   `points_to_zones` on the same polygons the mask came from, so facilities outside the block
@@ -85,7 +85,7 @@ Functions raise; they never skip or fill in. `ValueError` for inconsistent input
 `AntimeridianError` for a wrapping box and `PathsFileMissingError` for a missing
 `paths.yaml`. A block that no zone reaches is not an error: `rasterize_zones` returns an
 all-zero mask and `weighted_sums` an empty table, so a block loop can tell "nothing here"
-from "something broke". An empty zones table, a lon/lat table in the 0..360 convention, a
-missing key in a table to collate, duplicate or incomplete rows in a roll-up, and zoned
-pixels a coarse grid does not cover are errors, because each would otherwise produce a
-plausible wrong number.
+from "something broke". An empty zones table, a 0..360 lon/lat table that would have to be
+reprojected, a missing key in a table to collate, duplicate or incomplete rows in a roll-up,
+negative zone ids, a facility with zone 0, and zoned pixels a coarse grid does not cover are
+errors, because each would otherwise produce a plausible wrong number.

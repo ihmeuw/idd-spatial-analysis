@@ -66,12 +66,16 @@ def _most_detailed(population: pd.DataFrame, name: str, year_id: int | None) -> 
             msg = f"{name} has no rows for year_id={year_id}"
             raise ValueError(msg)
     else:
-        flags = population.groupby(LOCATION_ID_COLUMN)[_MOST_DETAILED_COLUMN]
-        varying = flags.max() != flags.min()
-        if varying.any():
+        flagged = population.loc[population[_MOST_DETAILED_COLUMN] == 1]
+        if flagged.empty:
+            msg = f"{name} flags no location as most detailed"
+            raise ValueError(msg)
+        per_year = flagged.groupby(_YEAR_COLUMN)[LOCATION_ID_COLUMN].apply(frozenset)
+        years = set(population[_YEAR_COLUMN].tolist())
+        if set(per_year.index.tolist()) != years or len(set(per_year.tolist())) > 1:
             msg = (
-                f"{name}: the most_detailed flag changes between years for "
-                f"{int(varying.sum())} locations; pass year_id to pick the year"
+                f"{name}: the set of most-detailed locations differs between years; "
+                "pass year_id to pick the year"
             )
             raise ValueError(msg)
         rows = population
@@ -96,9 +100,10 @@ def load_raking_shapes(
     applies either way. With ``bounds`` an empty result means no polygon reaches the box;
     without it an empty result is an error.
 
-    For ``gbd_*`` hierarchies the most-detailed flag comes from the population file; it is
-    normally the same in every year, and the function checks that rather than picking a year.
-    When the flag differs between years, ``year_id`` must name the year to use.
+    For ``gbd_*`` hierarchies the most-detailed locations come from the population file; the
+    set is normally the same in every year, and the function checks that rather than picking a
+    year. When the set differs between years (a flag changes, or a location appears in some
+    years only), ``year_id`` must name the year to use.
     """
     _check_hierarchy_name(hierarchy)
     root = Path(raking_root)

@@ -195,6 +195,44 @@ def test_narrowing_maps_nan_to_nodata_and_keeps_every_value(
     np.testing.assert_array_equal(back[~missing], counts[~missing].astype("int32"))
 
 
+def test_narrowing_lands_an_extreme_nodata_exactly(tmp_path: Path, grid: BlockGrid) -> None:
+    # float32 cannot hold INT_MAX; the fill must happen in the integer array, not the float one.
+    data = np.ones(grid.shape, dtype="float32")
+    data[0, 0] = np.nan
+    nodata = int(np.iinfo("int32").max)
+    path = write_geotiff_atomic(tmp_path / "extreme.tif", data, grid, nodata=nodata, dtype="int32")
+    with rasterio.open(path) as src:
+        back = src.read(1)
+        assert src.nodata == nodata
+    assert back[0, 0] == nodata
+    assert (back[1:] == 1).all()
+    with pytest.raises(ValueError, match="do not fit"):
+        write_geotiff_atomic(
+            tmp_path / "x.tif",
+            np.full(grid.shape, 2.0**31, dtype="float32"),
+            grid,
+            nodata=-1,
+            dtype="int32",
+        )
+
+
+def test_mosaic_with_a_resolution_covers_the_bounds(tmp_path: Path) -> None:
+    tile_grid = BlockGrid(
+        crs=WGS84, transform=Affine(1 / 120, 0, 10.0, 0, -1 / 120, 50.0), height=120, width=120
+    )
+    path = tmp_path / "tile.tif"
+    with rasterio.open(path, "w", **tile_grid.profile()) as dst:
+        dst.write(np.ones(tile_grid.shape, dtype="float32"), 1)
+    request = (10.0, 49.0, 10.0 + 10.5 / 60, 49.0 + 10.5 / 60)
+    data, grid = mosaic([path], request, 1 / 60)
+    assert grid.shape == (11, 11)
+    assert data.shape == (11, 11)
+    assert grid.bounds[0] == request[0]
+    assert grid.bounds[3] == pytest.approx(request[3])
+    assert grid.bounds[2] >= request[2]
+    assert grid.bounds[1] <= request[1]
+
+
 def test_narrowing_refuses_what_an_integer_cannot_hold(
     tmp_path: Path, grid: BlockGrid, population: np.ndarray
 ) -> None:

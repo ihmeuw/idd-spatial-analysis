@@ -9,11 +9,36 @@ import pandas as pd
 import pytest
 
 from idd_spatial_analysis.zonal import collate_blocks, weighted_sums
+from idd_spatial_analysis.zonal.sums import check_zone_mask, zone_index
 
 if TYPE_CHECKING:
     from idd_spatial_analysis.frame import BlockGrid
 
 COLUMNS = ["zone", "weighted_sum", "weight_sum"]
+
+
+def test_check_zone_mask_and_zone_index() -> None:
+    mask = np.array([[0, 5], [2_000_000_000, 5]], dtype="int32")
+    check_zone_mask(mask)
+    present, index = zone_index(mask)
+    assert present.tolist() == [5, 2_000_000_000]
+    assert present.dtype == np.int32
+    assert index.tolist() == [0, 0, 1, 0]
+    with pytest.raises(ValueError, match="negative"):
+        check_zone_mask(np.array([[-9999, 1]], dtype="int32"))
+    with pytest.raises(ValueError, match="2-D"):
+        check_zone_mask(np.zeros(3, dtype="int32"))
+    with pytest.raises(TypeError, match="integer"):
+        check_zone_mask(np.zeros((2, 2)))
+
+
+def test_negative_ids_are_refused(
+    mask: np.ndarray, population: np.ndarray, value: np.ndarray
+) -> None:
+    negative = mask.copy()
+    negative[0, 0] = -9999
+    with pytest.raises(ValueError, match="negative"):
+        weighted_sums(negative, population, value, nan_policy="drop_pixel")
 
 
 def _truth(
