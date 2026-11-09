@@ -1,0 +1,62 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Test / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Environments
+.venv/
+venv/
+env/
+
+# IDE
+# Commit the VSCode workspace settings (relative interpreter pin only);
+# ignore the rest.
+.vscode/*
+!.vscode/settings.json
+.idea/
+*.swp
+.DS_Store
+
+# NFS sillyrename tombstones
+.nfs*
+
+# mypy / ruff caches
+.mypy_cache/
+.ruff_cache/
+
+# Secrets — never commit. `.env.example` is the documented template.
+.env
+.env.*
+!.env.example
+
+# The only file with absolute paths; copy paths.yaml.example and edit (STANDARDS §Path safety).
+paths.yaml
+
+# Generated config — keep the directory, ignore its contents
+config/*
+!config/.gitkeep
+
+# Exploratory notebooks are never authoritative and may hold cluster paths (STANDARDS §Notebooks).
+notebooks/scratch/
+
+# Retired code from the February 2026 version, parked during the 2026-11 rebuild; delete when done.
+attic/
+
+# Claude Code working files — local-only, not part of git history.
+.claude/

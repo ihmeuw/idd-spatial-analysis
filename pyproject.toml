@@ -1,0 +1,109 @@
+[project]
+name = "idd-spatial-analysis"
+version = "0.1.0"
+description = "Shared geospatial tools for IDD research: block frames, admin boundaries, antimeridian-safe geometry, raster windows and regridding, zonal statistics"
+authors = [{ name = "Bobby Reiner" }]
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.12,<4"
+dependencies = [
+    # Floors only: the verified-needed lower bound, no speculative upper caps
+    # (STANDARDS §Environment).
+    "numpy>=2.0",
+    "pandas>=2.2",
+    "pyarrow>=19",
+    "shapely>=2.0",
+    "pyproj>=3.6",
+    "geopandas>=1.0",
+    "rasterio>=1.4",
+    "affine>=2.4",
+    "scipy>=1.15",
+    "pyyaml>=6",
+    "click>=8.0",
+    # Atomic file writes come from idd-tools (STANDARDS §I/O conventions); base extra only.
+    "idd-tools",
+]
+
+[project.optional-dependencies]
+# Adapters between rasterra.RasterArray and this package's (array, BlockGrid) pair, for the
+# repos that hold their rasters as RasterArray. Lazily imported; the base package never needs it.
+rasterra = ["rasterra>=0.6"]
+all = ["idd-spatial-analysis[rasterra]"]
+
+[project.scripts]
+idd-spatial = "idd_spatial_analysis.cli:main"
+
+# Cross-repo idd-* dependencies pin `main`; uv.lock records the commit.
+# Bump: uv lock --upgrade-package idd-tools
+[tool.uv.sources]
+idd-tools = { git = "ssh://git@github.com/ihmeuw/idd-tools.git", branch = "main" }
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "ruff",
+    "mypy",
+    "pre-commit",
+    "ipykernel>=7",  # lets the .venv register as a Jupyter kernel; dev group so consumers don't inherit it
+    "jupyter>=1",    # nbconvert, to execute the vignettes
+    "matplotlib>=3.8",  # quick looks inside the vignettes only
+]
+
+[build-system]
+# uv_build is 0.x; upstream promises compatibility only within a minor, so the bracket is a
+# known constraint, not a speculative cap. Keep at current minor.
+requires = ["uv_build>=0.12,<0.13"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+src = ["src"]
+target-version = "py312"
+extend-include = ["*.ipynb"]
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "COM812",   # trailing comma — formatter handles
+    "ISC001",   # implicit string concat — formatter handles
+    "ANN",      # type hints — mypy handles
+    "D",        # docstrings — too strict for research code
+    "E501",     # line length — formatter handles
+    "RET505",   # else after return — style preference, sometimes clearer
+    "CPY",      # copyright headers — not used in idd-* repos
+]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/**" = [
+    "INP001",  # scripts are not a package — no __init__.py needed
+    "T201",    # print() is the legitimate output mechanism for CLI scripts
+]
+"tests/**" = [
+    "S101",    # assert in tests
+    "ARG",     # fixture / parametrize args are sometimes unused in some cases
+    "S105",    # hardcoded passwords in tests
+    "PLR2004", # magic values are normal in test assertions
+]
+"notebooks/**" = [
+    "INP001",  # notebooks are not a package
+    "T201",    # printing is how a vignette shows a result
+    "E402",    # imports follow a markdown cell
+    "PLR2004", # worked examples use literal numbers
+    "ERA001",  # explanatory lines that look like code
+]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+markers = [
+    "qc: checks against real cluster data; skipped unless paths.yaml points at it (tests/qc)",
+]
+
+[tool.coverage.run]
+source = ["idd_spatial_analysis"]

@@ -1,0 +1,109 @@
+# idd-spatial-analysis
+
+Shared geospatial tools for IDD research code: block frames, admin boundaries,
+antimeridian-safe geometry, raster windows and regridding, and zonal statistics. It is a
+library, not a pipeline: it owns no outputs, draws no maps (that is idd-figures) and runs no
+jobs (that is idd-tools).
+
+## What is here
+
+| Subpackage | Purpose | Entry points |
+|---|---|---|
+| `frame` | The grid a block of pixels lives on and how blocks are chosen | `BlockGrid`, `grid_from_bounds`, `grid_from_raster`, `load_tile_index`, `block_grid`, `blocks_intersecting`, `block_for_point`, `bbox_in_crs` |
+| `boundaries` | Admin polygons from a pinned release, population-model raking shapes and hierarchies | `AdminRelease`, `load_admin`, `copy_release`, `load_raking_shapes`, `load_hierarchy` |
+| `geometry` | Longitude conventions, bound strings, cell areas, points to zones | `to_lon_360`, `to_lon_180`, `split_antimeridian`, `parse_bound`, `cell_area_km2`, `grid_cell_areas_km2`, `points_to_zones` |
+| `raster` | Windows, mosaics, regridding, zone masks, atomic GeoTIFF writes | `read_window`, `mosaic`, `reproject_to_grid`, `NearestIndexMap`, `resample_masked`, `rasterize_zones`, `write_geotiff_atomic` |
+| `zonal` | Population-weighted sums, sparse zone weights, hierarchy roll-up, nearest facility | `weighted_sums`, `zone_weights`, `rollup_hierarchy`, `collate_blocks`, `nearest_facility_distance`, `share_within` |
+
+A raster is the pair `(array, BlockGrid)`: a 2-D numpy array and the grid that places it.
+Repos that keep their rasters as `rasterra.RasterArray` convert at the edge with
+`idd_spatial_analysis.raster.adapters` (install the `rasterra` extra).
+
+Each subpackage has a page under `docs/` and an import-only notebook under
+`notebooks/vignettes/` that runs on synthetic data in seconds. Start with
+`docs/conventions.md`: it fixes the CRS strings, the north-up grid convention, nodata handling
+and the integer id columns every function assumes.
+
+## Install
+
+Requirements: [uv](https://docs.astral.sh/uv/) 0.12 or newer, a uv-managed Python 3.12
+(`uv python install 3.12`; interpreter downloads are deliberate, never implicit), and SSH
+access to the `ihmeuw` GitHub organisation for the `idd-tools` dependency.
+
+```bash
+git clone git@github.com:ihmeuw/idd-spatial-analysis.git
+cd idd-spatial-analysis
+uv sync --inexact --extra rasterra   # base dependencies, the dev group and the rasterra adapters
+cp paths.yaml.example paths.yaml     # then fill in the roots described below
+.venv/bin/pre-commit install
+```
+
+Everything runs through `.venv/bin/python`; there is nothing to activate. Plain `uv sync`
+rebuilds the environment exactly from `uv.lock` (vet it with `uv sync --dry-run` first).
+
+## Paths and data
+
+`paths.yaml` is gitignored and is the only file that may hold an absolute path. The package
+reads it through `idd_spatial_analysis.paths.load_paths()`; every key in
+`paths.yaml.example` is required.
+
+| Key | What lives there | Layout expected |
+|---|---|---|
+| `admin_shapefile_root` | LBD standard admin shapefile releases | `<root>/<YYYY_MM_DD>/lbd_standard_admin_{0,1,2}.shp` and the `_simplified` twins |
+| `tile_index_root` | The equal-area tile index per resolution | `<root>/<resolution>m/tile_index.parquet`, one row per tile, a `block_key` column |
+| `population_grid_root` | Gridded population rasters | GeoTIFFs on the tile index frame |
+| `raking_root` | Population-model raking inputs | `shapes_<gbd_YYYY>.parquet`, `population_<gbd_YYYY>.parquet`, `gbd-inputs/shapes_<lsae_N>_a2.parquet`, `gbd-inputs/hierarchy_<name>.parquet` |
+| `project_output_root` | This repo's output node | Written only by `idd-spatial materialize-admin-release`; list the key under `write:` to allow it |
+
+Loaders pin what they read: `AdminRelease(root, "YYYY_MM_DD")` names the release
+explicitly, `load_raking_shapes(root, "gbd_2023")` names the hierarchy. Nothing picks
+"the latest" for you.
+
+## Use
+
+```python
+from idd_spatial_analysis.paths import load_paths
+from idd_spatial_analysis.boundaries import AdminRelease, load_admin
+from idd_spatial_analysis.frame import block_grid, blocks_intersecting, load_tile_index
+from idd_spatial_analysis.raster import rasterize_zones, read_window
+from idd_spatial_analysis.zonal import weighted_sums
+
+paths = load_paths()
+release = AdminRelease(paths["admin_shapefile_root"], "2024_07_29")
+adm2 = load_admin(release, 2, countries=[165])
+
+tiles = load_tile_index(paths["tile_index_root"] / "100m" / "tile_index.parquet")
+for block_key in blocks_intersecting(tiles, adm2):
+    grid = block_grid(tiles, block_key, resolution=100.0)
+    population, _ = read_window(paths["population_grid_root"] / "population.tif", grid.bounds)
+    mask, windows = rasterize_zones(adm2, "ADM2_CODE", grid)
+    sums = weighted_sums(mask, population, value, nan_policy="drop_pixel")
+```
+
+The command line has one command, `idd-spatial materialize-admin-release`, which copies a
+release under `project_output_root` for compute nodes that cannot see the archive mount.
+`idd-spatial --help` lists its options.
+
+## Testing
+
+```bash
+.venv/bin/pytest                               # synthetic data, runs anywhere
+.venv/bin/pytest tests/qc -m qc                # real cluster data; skipped without paths.yaml
+.venv/bin/ruff check src tests && .venv/bin/ruff format --check src tests
+.venv/bin/mypy src
+```
+
+Every public function has a unit test under `tests/`, mirroring the source layout. `tests/qc`
+holds value-level checks against the cluster data named in `paths.yaml` and is excluded from
+CI. CI (`.github/workflows`) runs ruff, mypy and pytest in the locked environment.
+
+## Versions
+
+Python 3.12 (uv-managed), uv 0.12. Dependencies are declared as floors in `pyproject.toml`;
+the exact set, including the `idd-tools` commit from its `main` branch, is in `uv.lock`.
+Bump idd-tools with `uv lock --upgrade-package idd-tools`.
+
+## Requests from other repos
+
+Drop a note in `inbox/` (see `inbox/README.md`); processed requests move to
+`inbox/processed/`.

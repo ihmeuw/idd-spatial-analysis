@@ -1,0 +1,23 @@
+# Copy this file to paths.yaml (gitignored) and edit the values for your machine.
+# paths.yaml is the ONLY file in this repo allowed to contain absolute paths. The placeholder
+# values use /your/cluster/path/... by design so they do not trip the no-absolute-paths guard.
+# Every loader also accepts these roots as explicit arguments; paths.yaml is the convenience
+# for the cluster, not a requirement of the package.
+
+# Directory holding dated LBD standard admin shapefile releases (e.g. 2024_07_29/ beneath it).
+admin_shapefile_root: /your/cluster/path/admin_shapefiles
+
+# Directory holding the building-density tile indexes: <resolution>m/tile_index.parquet beneath it.
+tile_index_root: /your/cluster/path/building-density/tiles
+
+# Population-model root: modeling frame and per-block population rasters beneath it.
+population_grid_root: /your/cluster/path/population-model
+
+# Raking inputs: shapes_<hierarchy>.parquet, population_<hierarchy>.parquet, gbd-inputs/.
+raking_root: /your/cluster/path/population-model/admin-inputs/raking
+
+# This repo's output node (STANDARDS §Output management), used only if data is materialized.
+project_output_root: /your/cluster/path/idd-spatial-analysis
+
+# Keys of roots a Claude session may write under, beyond the repo and its node (STANDARDS §Path safety).
+write: []

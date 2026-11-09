@@ -1,0 +1,16 @@
+# Lint and type check inside the declared environment (STANDARDS §CI/CD item 1).
+name: Lint
+on: [push, pull_request]
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: webfactory/ssh-agent@v0.10.0       # idd-tools is an ssh:// git source
+        with:
+          ssh-private-key: ${{ secrets.IDD_CI_DEPLOY_KEYS }}
+      - uses: astral-sh/setup-uv@v6
+        with: { python-version: '3.12' }
+      - run: uv sync --extra rasterra           # the extras the checks need; never --all-extras
+      - run: uv run ruff check src/ tests/
+      - run: uv run mypy src/

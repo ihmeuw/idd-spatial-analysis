@@ -1,0 +1,16 @@
+# Unit tests on push and PR; tests/qc needs cluster data and runs on the cluster only
+# (STANDARDS §CI/CD item 2).
+name: Tests
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: webfactory/ssh-agent@v0.10.0       # idd-tools is an ssh:// git source
+        with:
+          ssh-private-key: ${{ secrets.IDD_CI_DEPLOY_KEYS }}
+      - uses: astral-sh/setup-uv@v6
+        with: { python-version: '3.12' }
+      - run: uv sync --extra rasterra           # the extras the tests need; not --all-extras
+      - run: uv run pytest tests/ --ignore=tests/qc --cov=src --cov-report=term-missing
