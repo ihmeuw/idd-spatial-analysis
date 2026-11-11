@@ -10,12 +10,25 @@ Every function in the package assumes the conventions below. They are fixed in
 - `WGS84 = "EPSG:4326"`: what shapefiles, GPS points and climate grids arrive in.
 - `WORLD_CYLINDRICAL_EQUAL_AREA = "ESRI:54034"`: the population model's block frame. Metres,
   equal area, the CRS of the tile index and of every 100 m block.
-- Distances (`zonal.nearest_facility_distance`) are metres along the Earth's surface whatever
-  the grid's CRS: points are compared in Earth-centred coordinates (`GEOCENTRIC_CRS`,
-  EPSG:4978) and the chord is turned into an arc. Planar distances in the equal-area frame
-  are off by the cosine of the latitude (15 percent at 30 degrees), so they are never used.
 - Metric cell areas (`geometry.grid_cell_areas_km2`) need a metre CRS and refuse others;
   lat/lon grids get exact spherical areas.
+
+## Distances
+
+"Actual distance" means metres along the Earth's surface. Nothing in the package measures a
+planar distance in a projected CRS: in the equal-area block frame that is off by the cosine
+of the latitude (15 percent at 30 degrees, a factor of two at 60), and in lon/lat it is not
+a distance at all. When code elsewhere needs a distance, it uses these, in any CRS:
+
+- `geometry.surface_distance(x1, y1, x2, y2, crs)`: paired points, geodesic metres on the
+  WGS84 ellipsoid (pyproj `Geod`), broadcasting like numpy.
+- `geometry.nearest_surface_distance(xs, ys, crs, target_x, target_y, target_crs)`: each
+  point's metres to its nearest target and the target's index, through a KD-tree on
+  Earth-centred coordinates (`GEOCENTRIC_CRS`, EPSG:4978) with the chord turned into an arc;
+  within a few parts in a million of the geodesic at block scales. `zonal.nearest_facility_distance`
+  is this applied to a zone mask.
+- `geometry.geocentric_points` and `geometry.chord_to_arc` are the building blocks for a
+  search that needs its own tree.
 
 ## Grids and rasters
 

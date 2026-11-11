@@ -11,25 +11,14 @@ import pytest
 from pyproj import Geod, Transformer
 from shapely.geometry import Point
 
-from idd_spatial_analysis.constants import EARTH_RADIUS_KM, WGS84, WORLD_CYLINDRICAL_EQUAL_AREA
+from idd_spatial_analysis.constants import WGS84, WORLD_CYLINDRICAL_EQUAL_AREA
 from idd_spatial_analysis.frame import BlockGrid, bbox_in_crs, grid_from_bounds
 from idd_spatial_analysis.zonal import nearest_facility_distance, share_within
-from idd_spatial_analysis.zonal.distance import _chord_to_arc
 
 if TYPE_CHECKING:
     from rasterio.windows import Window
 
 GEOD = Geod(ellps="WGS84")
-EARTH_RADIUS_M = EARTH_RADIUS_KM * 1000.0
-
-
-def test_chord_to_arc_is_pinned() -> None:
-    for arc in (1_000_000.0, 5_000_000.0):
-        chord = 2 * EARTH_RADIUS_M * np.sin(arc / (2 * EARTH_RADIUS_M))
-        assert _chord_to_arc(np.array([chord]))[0] == pytest.approx(arc, rel=1e-9)
-    half_turn = np.pi * EARTH_RADIUS_M
-    assert _chord_to_arc(np.array([2 * EARTH_RADIUS_M]))[0] == pytest.approx(half_turn, rel=1e-9)
-    assert _chord_to_arc(np.array([3 * EARTH_RADIUS_M]))[0] == pytest.approx(half_turn, rel=1e-9)
 
 
 def test_a_far_facility_needs_the_arc_correction(grid: BlockGrid, mask: np.ndarray) -> None:

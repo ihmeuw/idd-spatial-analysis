@@ -11,7 +11,7 @@ jobs (that is idd-tools).
 |---|---|---|
 | `frame` | The grid a block of pixels lives on and how blocks are chosen | `BlockGrid`, `grid_from_bounds`, `grid_from_raster`, `load_tile_index`, `block_grid`, `blocks_intersecting`, `block_for_point`, `bbox_in_crs` |
 | `boundaries` | Admin polygons from a pinned release, population-model raking shapes and hierarchies | `AdminRelease`, `load_admin`, `copy_release`, `load_raking_shapes`, `load_hierarchy` |
-| `geometry` | Longitude conventions, bound strings, cell areas, points to zones | `to_lon_360`, `to_lon_180`, `split_antimeridian`, `parse_bound`, `cell_area_km2`, `grid_cell_areas_km2`, `points_to_zones` |
+| `geometry` | Longitude conventions, bound strings, cell areas, points to zones, distances along the Earth | `to_lon_360`, `to_lon_180`, `split_antimeridian`, `parse_bound`, `cell_area_km2`, `grid_cell_areas_km2`, `points_to_zones`, `surface_distance`, `nearest_surface_distance` |
 | `raster` | Windows, mosaics, regridding, zone masks, atomic GeoTIFF writes | `read_window`, `mosaic`, `reproject_to_grid`, `NearestIndexMap`, `resample_masked`, `rasterize_zones`, `write_geotiff_atomic` |
 | `zonal` | Population-weighted sums, sparse zone weights, hierarchy roll-up, nearest facility (surface metres) | `weighted_sums`, `zone_weights`, `rollup_hierarchy`, `collate_blocks`, `nearest_facility_distance`, `share_within` |
 

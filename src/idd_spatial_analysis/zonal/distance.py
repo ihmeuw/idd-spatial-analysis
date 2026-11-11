@@ -1,10 +1,9 @@
 """Nearest-facility distances on a zone mask, and the share of weight within thresholds.
 
-Distances are metres along the Earth's surface whatever the grid's CRS: pixel centres and
-facilities are converted to Earth-centred Cartesian coordinates (EPSG:4978), the nearest
-facility is found in that space (a chord through the Earth) and the chord is turned into an
-arc. Planar distances in the equal-area block frame would be off by the cosine of the
-latitude away from the equator: 15 percent at 30 degrees, a factor of two at 60.
+Distances are metres along the Earth's surface whatever the grid's CRS (see
+``geometry.distances``): pixel centres and facilities are compared in Earth-centred
+coordinates and the chord is turned into an arc. Planar distances in the equal-area block
+frame would be off by the cosine of the latitude away from the equator.
 """
 
 from __future__ import annotations
@@ -13,12 +12,9 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
-from pyproj import Transformer
 from scipy.spatial import cKDTree
 
 from idd_spatial_analysis.constants import (
-    EARTH_RADIUS_KM,
-    GEOCENTRIC_CRS,
     SHARE_COLUMN,
     THRESHOLD_COLUMN,
     WEIGHT_TOTAL_COLUMN,
@@ -26,6 +22,7 @@ from idd_spatial_analysis.constants import (
     ZONE_COLUMN,
     ZONE_NODATA,
 )
+from idd_spatial_analysis.geometry.distances import chord_to_arc, geocentric_points
 from idd_spatial_analysis.zonal.sums import check_zone_mask, zone_index
 
 if TYPE_CHECKING:
@@ -36,33 +33,6 @@ if TYPE_CHECKING:
     from rasterio.windows import Window
 
     from idd_spatial_analysis.frame.grid import BlockGrid
-
-_EARTH_RADIUS_M = EARTH_RADIUS_KM * 1000.0
-_POINT_DIMENSIONS = 3
-
-
-def _geocentric(
-    transformer: Transformer, xs: NDArray[Any], ys: NDArray[Any]
-) -> NDArray[np.float64]:
-    """``(n, 3)`` Earth-centred metres of points on the ellipsoid, through ``transformer``."""
-    x = np.asarray(xs, dtype=np.float64)
-    y = np.asarray(ys, dtype=np.float64)
-    gx, gy, gz = transformer.transform(x, y, np.zeros_like(x))
-    points = np.column_stack([gx, gy, gz]).astype(np.float64)
-    if points.ndim != 2 or points.shape[1] != _POINT_DIMENSIONS:  # noqa: PLR2004
-        msg = f"expected (n, 3) geocentric points, got shape {points.shape}"
-        raise ValueError(msg)
-    if not np.isfinite(points).all():
-        bad = int((~np.isfinite(points).all(axis=1)).sum())
-        msg = f"{bad} points have no position on the Earth (outside the CRS's valid area)"
-        raise ValueError(msg)
-    return points
-
-
-def _chord_to_arc(chord: NDArray[Any]) -> NDArray[np.float64]:
-    """Surface distance for a straight-line distance between two points on the sphere."""
-    ratio = np.clip(np.asarray(chord, dtype=np.float64) / (2.0 * _EARTH_RADIUS_M), 0.0, 1.0)
-    return np.asarray(2.0 * _EARTH_RADIUS_M * np.arcsin(ratio), dtype=np.float64)
 
 
 def _facility_points(facilities_gdf: gpd.GeoDataFrame) -> NDArray[np.float64]:
@@ -75,11 +45,10 @@ def _facility_points(facilities_gdf: gpd.GeoDataFrame) -> NDArray[np.float64]:
     if not (facilities_gdf.geometry.geom_type == "Point").all():
         msg = "facilities must be Point geometries"
         raise TypeError(msg)
-    to_earth = Transformer.from_crs(facilities_gdf.crs, GEOCENTRIC_CRS, always_xy=True)
-    return _geocentric(
-        to_earth,
+    return geocentric_points(
         facilities_gdf.geometry.x.to_numpy(dtype=np.float64),
         facilities_gdf.geometry.y.to_numpy(dtype=np.float64),
+        facilities_gdf.crs,
     )
 
 
@@ -121,15 +90,11 @@ def _zone_pixels(
 
 
 def _nearest(
-    tree: cKDTree,
-    to_earth: Transformer,
-    grid: BlockGrid,
-    rows: NDArray[np.intp],
-    cols: NDArray[np.intp],
+    tree: cKDTree, grid: BlockGrid, rows: NDArray[np.intp], cols: NDArray[np.intp]
 ) -> NDArray[np.float64]:
     xs, ys = grid.pixel_centers()
-    chord, _ = tree.query(_geocentric(to_earth, xs[cols], ys[rows]))
-    return _chord_to_arc(chord)
+    chord, _ = tree.query(geocentric_points(xs[cols], ys[rows], grid.crs))
+    return chord_to_arc(chord)
 
 
 def nearest_facility_distance(  # noqa: PLR0913  (keyword-only options)
@@ -166,12 +131,11 @@ def nearest_facility_distance(  # noqa: PLR0913  (keyword-only options)
         msg = "facility_zone_col only applies with within_zone=True"
         raise ValueError(msg)
     facilities = _facility_points(facilities_gdf)
-    to_earth = Transformer.from_crs(grid.crs, GEOCENTRIC_CRS, always_xy=True)
     out = np.full(grid.shape, np.nan, dtype=np.float32)
     if not within_zone:
         rows, cols = np.nonzero(zone != ZONE_NODATA)
         if rows.size:
-            out[rows, cols] = _nearest(cKDTree(facilities), to_earth, grid, rows, cols)
+            out[rows, cols] = _nearest(cKDTree(facilities), grid, rows, cols)
         return out
     facility_zone = _facility_zones(facilities_gdf, str(facility_zone_col))
     present = np.unique(zone[zone != ZONE_NODATA])
@@ -180,8 +144,7 @@ def nearest_facility_distance(  # noqa: PLR0913  (keyword-only options)
         if not chosen.any():
             continue  # no facility on this zone: its pixels stay NaN by design
         rows, cols = _zone_pixels(zone, int(value), windows)
-        tree = cKDTree(facilities[chosen])
-        out[rows, cols] = _nearest(tree, to_earth, grid, rows, cols)
+        out[rows, cols] = _nearest(cKDTree(facilities[chosen]), grid, rows, cols)
     return out
 
 
