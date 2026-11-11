@@ -100,5 +100,6 @@ Functions raise; they never skip or fill in. `ValueError` for inconsistent input
 all-zero mask and `weighted_sums` an empty table, so a block loop can tell "nothing here"
 from "something broke". An empty zones table, a 0..360 lon/lat table that would have to be
 reprojected, a missing key in a table to collate, duplicate or incomplete rows in a roll-up,
-negative zone ids, a facility with zone 0, and zoned pixels a coarse grid does not cover are
-errors, because each would otherwise produce a plausible wrong number.
+a roll-up zone whose ancestor also carries sums, negative zone ids, a facility with zone 0,
+and zoned pixels a coarse grid does not cover are errors, because each would otherwise
+produce a plausible wrong number.

@@ -85,16 +85,43 @@ def test_incomplete_leaves_raise_unless_allowed(
     assert out.set_index("location_id").loc[1, "weighted_sum"] == 60.0
 
 
-def test_parents_and_unknown_zones_are_refused(
+def test_double_counting_and_unknown_zones_are_refused(
     leaf_sums: pd.DataFrame, hierarchy: pd.DataFrame
 ) -> None:
     with_parent = pd.concat(
         [leaf_sums, pd.DataFrame({"zone": [2], "weighted_sum": [1.0], "weight_sum": [1.0]})]
     )
-    with pytest.raises(ValueError, match="parents"):
+    with pytest.raises(ValueError, match="twice"):
         rollup_hierarchy(with_parent, hierarchy)
+    with_root = pd.concat(
+        [leaf_sums, pd.DataFrame({"zone": [1], "weighted_sum": [1.0], "weight_sum": [1.0]})]
+    )
+    with pytest.raises(ValueError, match="twice"):
+        rollup_hierarchy(with_root, hierarchy, leaves=[1, 4, 5, 6, 7])
     with pytest.raises(ValueError, match="not in the hierarchy"):
         rollup_hierarchy(leaf_sums.assign(zone=[4, 5, 6, 99]), hierarchy)
+
+
+def test_a_ragged_most_detailed_set_rolls_up(hierarchy: pd.DataFrame) -> None:
+    # The population model's raking set: 2 is most detailed (its children 4 and 5 carry
+    # nothing), beside 6 and 7. Structural leaves are expected unless the set is given.
+    ragged = pd.DataFrame(
+        {"zone": [2, 6, 7], "weighted_sum": [30.0, 30.0, 40.0], "weight_sum": [3.0, 3.0, 4.0]}
+    )
+    with pytest.raises(ValueError, match="no sums"):
+        rollup_hierarchy(ragged, hierarchy)
+    out = rollup_hierarchy(ragged, hierarchy, leaves=[2, 6, 7])
+    assert sorted(out["location_id"]) == [1, 2, 3, 6, 7]
+    by = out.set_index("location_id")
+    assert by.loc[1, "weighted_sum"] == 100.0
+    assert by.loc[1, "weight_sum"] == 10.0
+    assert by.loc[3, "weighted_sum"] == 30.0
+    assert by.loc[2, "level"] == 1
+    with pytest.raises(ValueError, match="expected leaves"):
+        rollup_hierarchy(ragged, hierarchy, leaves=[2, 6, 7, 99])
+
+
+def test_missing_columns_are_refused(leaf_sums: pd.DataFrame, hierarchy: pd.DataFrame) -> None:
     with pytest.raises(KeyError, match="sums"):
         rollup_hierarchy(leaf_sums.drop(columns=["weight_sum"]), hierarchy)
     with pytest.raises(KeyError, match="hierarchy"):

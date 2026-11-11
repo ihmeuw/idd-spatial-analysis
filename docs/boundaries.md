@@ -66,3 +66,14 @@ Under `raking_root` (the population model's `admin-inputs/raking` directory):
 - `load_hierarchy(root, name)`: `location_id`, `parent_id`, `level` as int32.
 
 `location_id` is int32 everywhere, which is also what `rasterize_zones` needs for a zone id.
+
+## The raking set is not the GBD hierarchy's leaf set
+
+Checked on the cluster on 2026-11-11 for `gbd_2023`: the 859 most-detailed shapes include 48
+territories the GBD hierarchy does not list at all (Aland, Anguilla, Aruba, Cayman Islands and
+the like) and 32 GBD locations the population model treats as most detailed although the
+hierarchy has children for them (New Zealand, the Indian states); none has a most-detailed
+ancestor, so nothing is counted twice. Consequences for a roll-up: pass the raking set as
+`rollup_hierarchy(..., leaves=shapes["location_id"])` so completeness is judged against what
+was rasterised, and drop (or report separately) the ids the hierarchy does not know, since
+they cannot be rolled anywhere. The lsae_1285 hierarchy lacks only 3 of the 859.

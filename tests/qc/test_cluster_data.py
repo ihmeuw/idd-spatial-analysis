@@ -13,6 +13,7 @@ import os
 from typing import TYPE_CHECKING
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from idd_spatial_analysis.boundaries import load_admin, load_hierarchy, load_raking_shapes
@@ -24,7 +25,7 @@ from idd_spatial_analysis.frame import (
     load_tile_index,
 )
 from idd_spatial_analysis.raster import rasterize_zones, read_window
-from idd_spatial_analysis.zonal import weighted_sums, zone_weights
+from idd_spatial_analysis.zonal import rollup_hierarchy, weighted_sums, zone_weights
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -66,15 +67,32 @@ def test_tile_index_blocks_are_whole_pixels(tile_index_path: Path) -> None:
         assert grid.bounds[3] == top
 
 
-def test_raking_shapes_are_hierarchy_leaves(raking_root: Path, hierarchy_name: str) -> None:
+def test_raking_shapes_roll_up_through_the_hierarchy(
+    raking_root: Path, hierarchy_name: str
+) -> None:
+    """The raking set sits at mixed levels and includes territories the GBD tree lacks.
+
+    What must hold: every shape id is unique, the ids the hierarchy knows carry no
+    most-detailed ancestor (no double counting), and a unit-weight table over them rolls up to
+    a root whose weight is their count. Ids the hierarchy does not list are counted and
+    bounded, not forbidden: for gbd_2023 they are 48 territories such as Aland or Aruba.
+    """
     hierarchy = load_hierarchy(raking_root, hierarchy_name)
     shapes = load_raking_shapes(raking_root, hierarchy_name)
     assert len(shapes) > MIN_CELLS
     assert shapes["location_id"].is_unique
-    parents = set(hierarchy.loc[hierarchy["level"] > 0, "parent_id"].tolist())
-    leaves = set(hierarchy["location_id"].tolist()) - parents
-    missing = set(shapes["location_id"].tolist()) - leaves
-    assert not missing, f"{len(missing)} shape ids are not most-detailed locations"
+    shape_ids = set(shapes["location_id"].tolist())
+    known = shape_ids & set(hierarchy["location_id"].tolist())
+    assert len(known) > MIN_CELLS
+    assert len(shape_ids - known) < len(shape_ids) / 10, "most shape ids must be in the hierarchy"
+    sums = pd.DataFrame({"zone": sorted(known), "weighted_sum": 1.0, "weight_sum": 1.0}).astype(
+        {"zone": "int32"}
+    )
+    rolled = rollup_hierarchy(sums, hierarchy, leaves=known)
+    root = rolled.loc[rolled["level"] == rolled["level"].min()]
+    assert len(root) == 1
+    assert root["weight_sum"].item() == pytest.approx(len(known))
+    assert np.allclose(rolled["mean"], 1.0)
 
 
 def test_block_weights_conserve_population(
