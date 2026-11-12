@@ -332,8 +332,80 @@ These are means over six blocks, one process at a time, on one node. They show w
 costs relative to the others; they are not a basis for sizing jobs, which comes from probes of
 the code that will run.
 
-## Not built yet
+## Running the builds as cluster jobs
 
-The shared weight table for a frame: which population product, which years and which coarse
-grid it covers, its place in the output node, and the launcher and worker that build it
-through idd-tools' jobmon layer.
+This package ships the functions. The launcher and the worker that run them over hundreds of
+blocks belong to the repo that needs the result, written with that repo's own job tooling; for
+the idd repos that is idd-tools' jobmon layer, and idd-tools' README and docs say how. What
+only this package can say is below: what the units of work are, what they share, which file
+marks one as done, and which tasks should wait for which. idd-tools names appear as pointers
+(as of November 2026); its own documentation governs their use.
+
+A repo that runs these as jobmon tasks asks for `idd-tools[jobmon]` in an optional extra of
+its own, so that its CI and its consumers never need the IHME artifactory. This package's own
+`jobmon` extra is for the builds this repo runs; a consumer does not need it.
+
+### The units of work
+
+| Kind of work | One cell is | Functions | File that marks the cell done |
+|---|---|---|---|
+| Zone lookup, per block | a block, for one zone set and resolution | `compute_zone_lookup_block` | `block_zones/<block_key>.parquet` (written after `blocks/<block_key>.tif`) |
+| Zone lookup, collect | the whole lookup | `collect_zone_lookup` | `build.yaml` |
+| Weights, per block | a block and a weight raster (a year) | `ZoneCellPairs.build` once per block, then `compute_zone_cell_weights_block` per year | `block_weights/<year>/<block_key>.parquet` |
+| Weights, combine | a year | `combine_zone_cell_weights` | `weights/<year>.parquet` |
+| Apply | a field: a covariate, scenario, year, draw | `load_zone_cell_weights(...).apply`, then `zonal.rollup_hierarchy` | the consumer's own output |
+
+Every file has one writer. That holds as long as a cell is in exactly one task, which is what
+a partition of the cells guarantees.
+
+### What shares a load
+
+- The years of one block share the read of its zone mask and the pairing of its pixels with
+  coarse cells, so a block's years belong in the same task and are not split across tasks
+  (group the cells on the block axis; idd-tools: `rectangular_partition` with the block as
+  the fixed axis, or `pack_to_target` grouped by block). One task per block also means no two
+  tasks read the same block's files at once.
+- Blocks share nothing with each other. How many blocks go into one task is a sizing
+  question, answered by probes.
+- Apply cells of the same year share the read of that year's table, so group them by year.
+
+### Which tasks wait for which
+
+| You want | Wire the tasks like this |
+|---|---|
+| Weights for some years, and the zone lookup for your zones is on disk | Weights tasks grouped by block, waiting for nothing. One combine task per year, waiting for every weights task that holds that year. |
+| The same, but no zone lookup exists for your zones and others will want it | A lookup round first: lookup tasks per group of blocks, and a collect task waiting for all of them. Each weights task waits for the lookup tasks that hold its blocks. Combine as above. |
+| The same, and nobody else needs the lookup | No lookup round. The weights task computes the mask itself (`compute_zone_lookup_block(...).mask`) and writes only the weights. |
+| More years later | Run the weights and combine rounds for the new years only. Files that exist are skipped by the done-check; the pairing is recomputed per block, which takes seconds. |
+| Weights, then apply, in one workflow | Apply tasks grouped by year, each waiting for that year's combine task. |
+| Apply as a separate launch | Nothing to wait for. At task entry, check that `weights/<year>.parquet` exists and fail if it does not (idd-tools: `validate_inputs`). |
+| One year, used once | The first row, written to a directory of your own and removed afterwards. For a small zone set no file is needed at all: `ZoneCellWeights.from_table(combine_zone_cell_weights(...))`. |
+| A covariate that really is at the frame's resolution | The weights do not apply; this is a pass over the pixels. Cells are block by year by covariate; group by block (shares the mask) and year (shares the weight raster); each task writes the partial sums of its cells (`zonal.weighted_sums`); a combine per covariate and year waits for all blocks and calls `zonal.collate_blocks`. |
+
+Two things to keep when wiring:
+
+- Combine with `combine_zone_cell_weights` and write the table it returns with its schema, not
+  with a generic concatenation of the block files. A zone that straddles blocks can have the
+  same (zone, cell) pair in two files, which must be added, and the coarse grid in the
+  metadata must reach the collected file.
+- When a round is launched again by itself, drop the tasks whose files exist (idd-tools:
+  `filter_already_done`), so later tasks do not wait for work that is already on disk.
+
+### What to measure
+
+The phases of a weights task that deserve their own timing label: read the mask, pair, read
+the weight raster, sum, write. From the single-process measurements above, pairing is the
+per-block load and reading the weight raster is most of each year. A full block holds a 268 MB
+mask, a 268 MB weight raster and about 1 GB of pair indices. The one process that ran these
+steps together with the pixel pass on six blocks (2026-11-12, every pixel centre transformed)
+peaked at 6.8 GB; the weights steps alone have not been measured separately.
+
+Those are observations of one process on one node. Bundle sizes and resource asks come from
+probes of the code that will run, at the concurrency it will run at: many tasks reading the
+same weight rasters at once is the case a lone probe under-measures.
+
+### What this repo builds itself
+
+Only products that many repos share. At present that is the `lsae_1285` zone lookup at 100 m.
+Weights for a particular grid, population product and set of years are built by the repo that
+needs them, into a directory of its choosing: its own, removed after use, or a shared one.
