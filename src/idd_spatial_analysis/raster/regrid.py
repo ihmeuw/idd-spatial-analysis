@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 from pyproj import Transformer
@@ -26,6 +26,17 @@ if TYPE_CHECKING:
 
 _OUTSIDE = -1
 _IMAGE_NDIM = 2
+
+CentreTransform = Literal["same_crs", "row_and_column", "every_pixel"]
+"""How the target pixel centres reached the source CRS. ``"same_crs"``: no transform.
+``"row_and_column"``: one row and one column of centres were transformed, because between the
+two CRSs x depends on the column alone and y on the row alone (cylindrical projections of the
+same datum: the equal-area block frame against lon/lat). ``"every_pixel"``: every centre was
+transformed on its own."""
+
+_SEPARABLE_SAMPLE = 33
+"""Lattice positions per axis, both ends included, at which the row-and-column coordinates are
+compared with a transform of the point itself before they are trusted."""
 
 
 def _floor_index(values: NDArray[Any], origin: float, step: float, size: int) -> NDArray[np.int32]:
@@ -54,20 +65,63 @@ def _joint_outside(rows: NDArray[np.int32], cols: NDArray[np.int32]) -> None:
     cols[outside] = _OUTSIDE
 
 
+def _sample_positions(size: int) -> NDArray[np.intp]:
+    """Up to ``_SEPARABLE_SAMPLE`` indices spread evenly over ``range(size)``, both ends included."""
+    count = min(size, _SEPARABLE_SAMPLE)
+    return np.unique(np.linspace(0, size - 1, count).round().astype(np.intp))
+
+
+def _row_and_column_centres(
+    src_crs: str, dst_crs: str, xs: NDArray[np.float64], ys: NDArray[np.float64]
+) -> tuple[NDArray[np.float64], NDArray[np.float64]] | None:
+    """The lattice ``xs`` by ``ys`` in ``dst_crs`` as one x per column and one y per row.
+
+    Returned only when the lattice supports it: the middle row and the middle column are
+    transformed, then a sample of lattice points spread over the whole lattice (edges and
+    corners included) is transformed point by point, and every sampled coordinate must equal
+    the row-and-column one bit for bit. Any difference, or a coordinate that is not finite
+    along the middle row or column, gives ``None`` and the caller transforms every point.
+
+    The equality is exact because a transform that moves x and y independently computes each
+    with the same arithmetic whatever the other coordinate is; measured on the equal-area
+    block frame against lon/lat, in both directions. It is a check on a sample, not a proof:
+    a pair of CRSs that agreed at every sampled point and differed between them would pass.
+    """
+    transformer = Transformer.from_crs(src_crs, dst_crs, always_xy=True)
+    mid_x, mid_y = xs[xs.size // 2], ys[ys.size // 2]
+    x_of_col = np.asarray(transformer.transform(xs, np.full(xs.shape, mid_y))[0], dtype=np.float64)
+    y_of_row = np.asarray(transformer.transform(np.full(ys.shape, mid_x), ys)[1], dtype=np.float64)
+    if not (np.isfinite(x_of_col).all() and np.isfinite(y_of_row).all()):
+        return None
+    cols, rows = _sample_positions(xs.size), _sample_positions(ys.size)
+    grid_x, grid_y = np.meshgrid(xs[cols], ys[rows])
+    sample_x, sample_y = transformer.transform(grid_x.ravel(), grid_y.ravel())
+    same = np.array_equal(
+        np.asarray(sample_x, dtype=np.float64).reshape(grid_x.shape),
+        np.broadcast_to(x_of_col[cols], grid_x.shape),
+    ) and np.array_equal(
+        np.asarray(sample_y, dtype=np.float64).reshape(grid_x.shape),
+        np.broadcast_to(y_of_row[rows][:, np.newaxis], grid_x.shape),
+    )
+    return (x_of_col, y_of_row) if same else None
+
+
 @dataclass(frozen=True, eq=False)
 class NearestIndexMap:
     """Source pixel for each target pixel (centre-in-pixel), built once, applied per slice.
 
-    Three layouts share one ``apply``: separable 1-D ``rows``/``cols`` (same CRS, no mask),
-    full 2-D arrays (different CRS, no mask), or 1-D arrays aligned with ``selected`` flat
-    target indices (a mask was given). ``-1`` marks a target pixel whose centre falls outside
-    the source grid.
+    Three layouts share one ``apply``: per-axis 1-D ``rows``/``cols`` (no mask; the same CRS,
+    or two CRSs between which rows and columns transform independently), full 2-D arrays (no
+    mask, any other pair of CRSs), or 1-D arrays aligned with ``selected`` flat target indices
+    (a mask was given). ``-1`` marks a target pixel whose centre falls outside the source
+    grid. ``centre_transform`` says how the centres reached the source CRS.
     """
 
     source_shape: tuple[int, int]
     target_shape: tuple[int, int]
     rows: NDArray[np.int32]
     cols: NDArray[np.int32]
+    centre_transform: CentreTransform
     selected: NDArray[np.intp] | None = None
 
     @classmethod
@@ -77,36 +131,59 @@ class NearestIndexMap:
         target: BlockGrid,
         *,
         target_mask: NDArray[np.bool_] | None = None,
+        allow_row_and_column: bool = True,
     ) -> NearestIndexMap:
-        """The lookup from ``target`` into ``source``; with ``target_mask`` only for True pixels."""
-        same_crs = crs_equal(source.crs, target.crs)
+        """The lookup from ``target`` into ``source``; with ``target_mask`` only for True pixels.
+
+        Between two different CRSs the target's pixel centres must be moved into the source
+        CRS. When x depends on the column alone and y on the row alone, one row and one
+        column of centres give every pixel's coordinates: a few thousand transforms for a
+        block instead of tens of millions, with the same result. That route is taken only
+        after a sample of points transformed on their own agrees with it exactly
+        (``_row_and_column_centres``); otherwise, or with ``allow_row_and_column=False``,
+        every centre is transformed.
+        """
         xs, ys = target.pixel_centers()
+        axes: tuple[NDArray[np.float64], NDArray[np.float64]] | None = None
+        how: CentreTransform = "every_pixel"
+        if crs_equal(source.crs, target.crs):
+            axes, how = (xs, ys), "same_crs"
+        elif allow_row_and_column:
+            axes = _row_and_column_centres(target.crs, source.crs, xs, ys)
+            how = "every_pixel" if axes is None else "row_and_column"
+
+        selected: NDArray[np.intp] | None = None
         if target_mask is not None:
             mask = np.asarray(target_mask, dtype=bool)
             if mask.shape != target.shape:
                 msg = f"target_mask shape {mask.shape} does not match the target {target.shape}"
                 raise ValueError(msg)
             selected = np.flatnonzero(mask)
+
+        transform = source.transform
+        if axes is not None:
+            row_of_row = _floor_index(axes[1], transform.f, transform.e, source.height)
+            col_of_col = _floor_index(axes[0], transform.c, transform.a, source.width)
+            if selected is None:
+                return cls(source.shape, target.shape, row_of_row, col_of_col, how)
+            target_rows, target_cols = np.divmod(selected, target.width)
+            rows, cols = row_of_row[target_rows], col_of_col[target_cols]
+            _joint_outside(rows, cols)
+            return cls(source.shape, target.shape, rows, cols, how, selected)
+
+        if selected is None:
+            grid_x, grid_y = np.meshgrid(xs, ys)
+            x, y = grid_x.ravel(), grid_y.ravel()
+        else:
             target_rows, target_cols = np.divmod(selected, target.width)
             x, y = xs[target_cols], ys[target_rows]
-            if not same_crs:
-                x, y = _transform_points(target.crs, source.crs, x, y)
-            rows = _floor_index(y, source.transform.f, source.transform.e, source.height)
-            cols = _floor_index(x, source.transform.c, source.transform.a, source.width)
-            _joint_outside(rows, cols)
-            return cls(source.shape, target.shape, rows, cols, selected)
-        if same_crs:
-            rows = _floor_index(ys, source.transform.f, source.transform.e, source.height)
-            cols = _floor_index(xs, source.transform.c, source.transform.a, source.width)
-            return cls(source.shape, target.shape, rows, cols)
-        grid_x, grid_y = np.meshgrid(xs, ys)
-        x, y = _transform_points(target.crs, source.crs, grid_x.ravel(), grid_y.ravel())
-        rows = _floor_index(y, source.transform.f, source.transform.e, source.height)
-        cols = _floor_index(x, source.transform.c, source.transform.a, source.width)
+        x, y = _transform_points(target.crs, source.crs, x, y)
+        rows = _floor_index(y, transform.f, transform.e, source.height)
+        cols = _floor_index(x, transform.c, transform.a, source.width)
         _joint_outside(rows, cols)
-        return cls(
-            source.shape, target.shape, rows.reshape(target.shape), cols.reshape(target.shape)
-        )
+        if selected is None:
+            rows, cols = rows.reshape(target.shape), cols.reshape(target.shape)
+        return cls(source.shape, target.shape, rows, cols, how, selected)
 
     @property
     def masked(self) -> bool:
