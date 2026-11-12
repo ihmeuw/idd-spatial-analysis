@@ -69,6 +69,19 @@ def test_matches_numpy_ground_truth(
         assert row["weight_sum"] == pytest.approx(weight, rel=1e-9)
 
 
+def test_default_policy_counts_a_nan_value_as_zero(
+    mask: np.ndarray, population: np.ndarray, value: np.ndarray
+) -> None:
+    """Without ``nan_policy`` the weight of a NaN-valued pixel stays in the denominator."""
+    default = weighted_sums(mask, population, value)
+    keep = weighted_sums(mask, population, value, nan_policy="keep_weight")
+    pd.testing.assert_frame_equal(default, keep)
+    as_zero = weighted_sums(
+        mask, population, np.nan_to_num(value, nan=0.0), nan_policy="drop_pixel"
+    )
+    pd.testing.assert_frame_equal(default, as_zero)
+
+
 def test_policies_differ_only_where_value_is_nan(
     mask: np.ndarray, population: np.ndarray, value: np.ndarray
 ) -> None:

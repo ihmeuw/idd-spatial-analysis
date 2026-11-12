@@ -23,7 +23,11 @@ if TYPE_CHECKING:
     from numpy.typing import NDArray
 
 NanPolicy = Literal["keep_weight", "drop_pixel"]
-"""What a NaN value at a weighted pixel does: stay in the weight sum, or leave both sums."""
+"""What a NaN value at a weighted pixel does: stay in the weight sum, or leave both sums.
+
+``keep_weight`` is the default everywhere: the value counts as zero, so the pixel's weight
+stays in the denominator. ``drop_pixel`` skips the pixel in numerator and denominator alike.
+"""
 
 _SUM_COLUMNS = [WEIGHTED_SUM_COLUMN, WEIGHT_SUM_COLUMN]
 _IMAGE_NDIM = 2
@@ -59,15 +63,18 @@ def weighted_sums(
     weight: NDArray[Any],
     value: NDArray[Any],
     *,
-    nan_policy: NanPolicy,
+    nan_policy: NanPolicy = "keep_weight",
 ) -> pd.DataFrame:
     """Per zone: ``sum(weight * value)`` and ``sum(weight)`` over the zone's pixels.
 
     ``value`` is 2-D or a 3-D stack ``(slice, rows, cols)``; a stack yields a ``slice`` column.
     Pixels with zone ``0`` or a NaN weight never count. A NaN value at a weighted pixel adds
-    nothing to the weighted sum; ``nan_policy="keep_weight"`` keeps its weight in the weight
-    sum (the pixel's people exist but have no value), ``"drop_pixel"`` removes it from both.
-    Sums accumulate in float64. Zones with no pixel on the mask have no row.
+    nothing to the weighted sum. With the default ``nan_policy="keep_weight"`` its weight
+    stays in the weight sum, so the missing value acts as zero in the mean; that is right when
+    missing means zero (a raster padded to a common extent) and is what the forecast-mbp and
+    climate-data aggregations do. ``"drop_pixel"`` removes the pixel from both sums, so the
+    mean is over the pixels that have a value. Sums accumulate in float64. Zones with no pixel
+    on the mask have no row.
     """
     if nan_policy not in get_args(NanPolicy):
         msg = f"nan_policy must be one of {get_args(NanPolicy)}, got {nan_policy!r}"
