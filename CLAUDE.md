@@ -19,8 +19,55 @@ mixed.
 - **Sync idiom:** `uv sync --inexact` day-to-day; plain `uv sync` (exact) for
   clean rebuilds, vetted first with `uv sync --dry-run`. `--all-extras` to get
   the full surface including the `notebooks` extra.
-- **No jobmon:** this repo declares nothing jobmon-related and carries no
-  ihme `[[tool.uv.index]]` block.
+- **Jobmon is an extra (Bobby, 2026-11-12; replaces "No jobmon"):** the jobs
+  that build this repo's shared lookup products run through idd-tools' jobmon
+  layer. `pyproject.toml` declares the `jobmon` extra as `idd-tools[jobmon]`
+  and nothing else (the idd-travel-time / idd-human-suitability form: the
+  jobmon version is always idd-tools' own, never pinned here) and the
+  non-explicit ihme `[[tool.uv.index]]` block from the /scaffold-repo
+  template. Sync it on the
+  cluster with `uv sync --inexact --extra rasterra --extra jobmon`. CI never
+  syncs it, no consumer of the library needs it, and the base package must
+  keep importing without it.
 - Interpreter downloads are deliberate only: the user-level uv policy is
   `python-downloads = "manual"` — a plain `uv venv`/`uv sync` must never
   trigger a CPython download.
+
+## jobmon via idd-tools: the contract (installed 2026-11-12 by /jobmon-contract)
+
+These sentences bind every session in this repo. Code already in the repo
+is not a precedent that overrides them: if an existing worker or launcher
+breaks a line below, it is a defect to report, not a pattern to copy.
+
+- **Read first, every time.** Before writing or changing any launcher or
+  worker, read the idd-tools README end to end and the docstrings of
+  `idd_tools.jobmon.submit`, `atomic_io`, `task_logger`, `resources`,
+  `resource_audit`, `run_registry`, `calibrate` and `partition`, and list in
+  the plan which of their calls the code will use. Reading in a previous
+  session does not count.
+- **Every worker:** runs inside `AtomicRegistry(output_dir, task_id=...,
+  task_template=...)`, writes outputs only through `atomic_write` /
+  `atomic_write_parquet(..., registry=r)`, decides "already done" only with
+  `subtask_skip`, takes `--task-id {task_id}` from the template, and emits
+  `TaskProgressLogger.entry(...)` and `.report()` so a `REPORT:` line exists
+  for sizing. A worker with its own temp-file writes or its own done-check
+  is wrong even when it works.
+- **Every launcher:** builds a `TaskManifest` and submits with
+  `submit_with_manifest`; bundles work so every task clears idd-tools' task-size floor
+  (`docs/jobmon/overview.md` §Task size: `calibrate_bundle_size`, `pack_to_target` /
+  `rectangular_partition`); sizes resources per task from measured evidence
+  (probe -> `audit_run` -> `ResourcePredictor` or
+  `fit_from_probe_history`), never one static ask across tasks of unequal
+  size; runs `max_resource_check` before submitting; confirms with
+  `probe_only` on the exact code that will run at scale; calls
+  `register_run` and `register_probe`; prints the jobmon GUI URL.
+- **After every run:** `audit_run` + `policy_metrics` + `sizing_floor_report`.
+  The target on both memory and runtime is idd-tools' (`docs/jobmon/overview.md`
+  §Sizing resource asks); the global rules state none (Decision 9, 2026-10-30). Over-asking is not free: it is a failure that costs this
+  account's priority. An over- or under-allocated run is sized again before
+  the next submission; "it finished" is not a pass.
+- **Reruns resume, never repeat:** done work is skipped through the
+  registry and `subtask_skip`; nothing that exists on disk is recomputed or
+  refetched; a cancelled run loses nothing but the tasks in flight.
+- **A change to the worker or launcher after the probe re-probes.** The
+  full run goes out only on code a probe has run.

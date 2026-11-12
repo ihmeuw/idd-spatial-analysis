@@ -20,10 +20,10 @@ dependencies = [
     "scipy>=1.15",
     "pyyaml>=6",
     "click>=8.0",
-    # Declared for the atomic writes of STANDARDS §I/O conventions, but not yet imported: the
-    # base install cannot import idd_tools.jobmon.atomic_io without the jobmon client, so
-    # raster/io.py carries a copy of atomic_write until idd-tools exposes it elsewhere
-    # (.claude/DECISIONS.md 2026-11-09).
+    # The base install uses idd_tools.versions (output nodes). It cannot import
+    # idd_tools.jobmon without the jobmon client, so raster/io.py carries a copy of
+    # atomic_write for the library's own writes (.claude/DECISIONS.md 2026-11-09); the jobs
+    # that build the shared products install the `jobmon` extra and write through idd-tools.
     "idd-tools",
 ]
 
@@ -31,15 +31,42 @@ dependencies = [
 # Adapters between rasterra.RasterArray and this package's (array, BlockGrid) pair, for the
 # repos that hold their rasters as RasterArray. Lazily imported; the base package never needs it.
 rasterra = ["rasterra>=0.6"]
+# The jobs that build this repo's shared lookup products run through idd-tools' jobmon layer.
+# The client resolves only from the IHME artifactory, so it is an extra: a consumer of the
+# library never resolves it and CI never syncs it (STANDARDS §Environment). The extra asks
+# for idd-tools[jobmon] and nothing else, so the jobmon version is always idd-tools' own and
+# cannot drift from it (the form idd-travel-time and idd-human-suitability use; Bobby,
+# 2026-11-12). Sync on the cluster with `--extra jobmon`.
+jobmon = ["idd-tools[jobmon]"]
+# `all` is what a consumer may ask for, so it leaves the cluster-only extra out.
 all = ["idd-spatial-analysis[rasterra]"]
 
 [project.scripts]
 idd-spatial = "idd_spatial_analysis.cli:main"
 
+# IHME-internal artifactory — required for jobmon_installer_ihme and any other
+# internal-only deps; public PyPI does not have these packages.
+#
+# NOT `explicit`: internal packages pull internal-only TRANSITIVE deps
+# (jobmon_installer_ihme alone drags jobmon-client, jobmon-core, jobmon-slurm,
+# slurm-rest), and uv source pins apply to DIRECT dependencies only — with
+# `explicit = true` those transitives become unresolvable (verified on the
+# idd-figures pilot, 2026-07-02). Do NOT "tidy" this by adding explicit = true;
+# it reads like a safety improvement and silently breaks jobmon resolution.
+# As a non-explicit index, uv consults ihme BEFORE default PyPI (definition
+# order): internal names resolve here, public names fall through to PyPI.
+# (Safer than Poetry's old "supplemental" priority, which searched PyPI first.)
+[[tool.uv.index]]
+name = "ihme"
+url = "https://artifactory.ihme.washington.edu/artifactory/api/pypi/pypi-shared/simple"
+
 # Cross-repo idd-* dependencies pin `main`; uv.lock records the commit.
 # Bump: uv lock --upgrade-package idd-tools
 [tool.uv.sources]
 idd-tools = { git = "ssh://git@github.com/ihmeuw/idd-tools.git", branch = "main" }
+# Belt-and-braces: force the named internal direct dep to the ihme index even
+# if index order ever changes.
+jobmon_installer_ihme = { index = "ihme" }
 
 [dependency-groups]
 dev = [
