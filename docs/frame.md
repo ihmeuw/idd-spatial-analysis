@@ -38,11 +38,19 @@ reads it and checks the CRS and the `block_key` column; it raises on anything el
 - `profile(dtype, nodata, count)`: a GeoTIFF profile (LZW, tiled at 512 when the grid is
   large enough); it refuses a nodata the dtype cannot hold, so an integer profile needs an
   explicit integer nodata or `None`.
+- `to_dict()` and `BlockGrid.from_dict(data)`: the grid as plain strings and numbers (`crs`,
+  the six `transform` coefficients, `height`, `width`) and back, exactly; this is how a
+  product records the grid it was built for.
 
 `grid_from_bounds(bounds, resolution, crs)` builds a grid for arbitrary bounds and
 `grid_from_raster(path)` reads one from a file. `grid_from_coords(xs, ys, crs, registration=...)`
 builds the grid that a field's coordinate arrays label: `xs` ascending, `ys` descending, evenly
 spaced, and `registration` stated (`"center"` or `"lower_left"`, no default).
+
+`grids_match(a, b)` says whether two grids are the same grid: same CRS, same shape, and no
+outer edge further apart than `GRID_MATCH_TOLERANCE` of a pixel (a thousandth). `==` on two
+`BlockGrid`s is exact and refuses the same grid described once from float32 and once from
+float64 coordinates; `grids_match` accepts that and still refuses a grid half a pixel away.
 
 ## Bounds across CRSs
 

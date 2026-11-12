@@ -1,8 +1,10 @@
 # Lookup products
 
 A lookup product is a spatial assignment computed once, written to disk and read by every job
-that needs it. There is one so far, the zone lookup; the zone-by-cell weight table is planned
-(last section).
+that needs it. There are two: the zone lookup (the zone id of every pixel) and the zone cell
+weights (a weight raster summed onto pairs of zone and coarse cell). The functions for both
+are here; the shared build of the first exists in the output node, the shared build of the
+second does not yet.
 
 ## Zone lookup: the zone id of every pixel
 
@@ -153,24 +155,161 @@ different:
 A covariate that exists at the frame's resolution still needs one pass over the pixels of
 every block for every slice; `weighted_sums` is that pass and dominates the cost above.
 
-## Planned: zone cell weights
+## Zone cell weights: a weight raster on (zone, coarse cell) pairs
 
-For a covariate on a coarser grid, each pixel takes the value of one coarse cell, so the
-weighted sum over pixels equals a sum over cells of the cell's value times the zone's weight
-inside that cell. Those weights depend on the zones, the weight raster and the coarse grid,
-not on the covariate.
+For a covariate on a coarser grid than the block frame, each pixel takes the value of one
+coarse cell, so the weighted sum over a zone's pixels equals a sum over cells of the cell's
+value times the zone's weight inside that cell. Those weights depend on the zones, the weight
+raster and the coarse grid, not on the covariate. Once they are on disk, the two sums per
+zone for any field on that grid are a product over the table's rows; the pixels are not
+touched again.
 
-The functions exist: `zonal.ZoneCellPairs.build(mask, grid, coarse)` pairs every zoned pixel
-of a block with its coarse cell once, `sum_weight` adds a weight raster (one per year) onto
-the pairs, and `zonal.apply_zone_weights(table, field)` returns the same two sums per zone
-that `weighted_sums` gives on the pixels. The coarse grid comes from
-`frame.grid_from_coords(lon, lat, crs, registration=...)`, where the registration is stated,
-never assumed (`docs/conventions.md`). The stored product (a table for a whole frame with its
-grid recorded, and the commands to build it) is not built yet.
+### What the directory holds
 
-Measured on the cluster on 2026-11-12: six blocks of `lsae_1285`, population of three years,
-annual mean temperature on a 0.1 degree grid. Both ways use the same pixel-centre lookup and
-gave the same zone means (largest difference 6e-13 degrees over 4,581 zone-years).
+| Path | Written by | Content |
+|---|---|---|
+| `block_weights/<label>/<block_key>.parquet` | `build_zone_cell_weights_block` | one block and one weight raster: `zone`, `coarse_row`, `coarse_col`, `weight` |
+| `weights/<label>.parquet` | `collect_zone_cell_weights` | the blocks of one label added up, same columns; the table `apply` uses |
+
+`label` names the weight raster, normally the population year. Every file carries, in its
+parquet schema metadata, the coarse grid it was built for (CRS, transform, shape), the block
+frame's CRS and resolution, and counts: zoned pixels, pairs, total weight, the pixels and
+weight the coarse grid did not cover, and how the pixel centres were transformed. A constant
+such as the year is in the path and the metadata, not in a column.
+
+A pair appears when at least one of its pixels has a finite weight: a pair whose weights are
+all zero stays (the zone still gets a row with a zero weight sum, as in `weighted_sums`), a
+pair whose weights are all NaN does not.
+
+### Building one, in rounds
+
+Each file has exactly one writer, so the work splits into rounds that can run as separate
+tasks.
+
+```python
+from idd_spatial_analysis.frame import grid_from_coords
+from idd_spatial_analysis.lookup import (
+    build_zone_cell_weights_block,
+    collect_zone_cell_weights,
+    read_zone_lookup_block,
+)
+from idd_spatial_analysis.raster import read_window
+from idd_spatial_analysis.zonal import ZoneCellPairs
+
+coarse = grid_from_coords(lon, lat, "EPSG:4326", registration="center")
+
+# Round 1, per block: pair the zoned pixels with coarse cells once, then one table per year.
+for key in keys:
+    mask, grid = read_zone_lookup_block(zone_lookup_directory, key)
+    pairs = ZoneCellPairs.build(mask, grid, coarse)
+    for year in years:
+        population, _ = read_window(population_tif(year, key), grid.bounds, boundless=True)
+        build_zone_cell_weights_block(pairs, population, directory, str(year), key)
+
+# Round 2, per year, once its blocks are there: add the blocks up.
+for year in years:
+    collect_zone_cell_weights(directory, str(year), keys, zone_set="my_zones")
+```
+
+The pairing depends on the zones and the two grids only, so one pairing serves every year of
+a block, and a later batch of years repeats round 1 for those years alone. A zone that
+straddles blocks can share a coarse cell across the boundary; `collect_zone_cell_weights`
+adds those weights. It refuses to finish when a block has no table for the label, when the
+label's directory holds a block that is not in `block_keys`, or when blocks were built for
+different coarse grids.
+
+A zoned pixel with a finite weight whose centre lies outside the coarse grid is an error,
+because its weight would vanish from every mean. `allow_uncovered=True` leaves such pixels
+out and records their count and weight in the file's metadata.
+
+### Using one
+
+```python
+from idd_spatial_analysis.frame import grid_from_coords
+from idd_spatial_analysis.lookup import load_zone_cell_weights
+from idd_spatial_analysis.zonal import rollup_hierarchy
+
+weights = load_zone_cell_weights(directory, "2020")
+field_grid = grid_from_coords(field_lon, field_lat, "EPSG:4326", registration="center")
+sums = weights.apply(field, field_grid)  # zone, weighted_sum, weight_sum
+by_level = rollup_hierarchy(sums, hierarchy, leaves=with_pixels)
+```
+
+`apply` takes the field and the grid the field is on, and refuses a grid that is not the one
+the table was built for: same CRS, same shape, cell edges within a thousandth of a cell
+(`frame.grids_match`, `GRID_MATCH_TOLERANCE`). The tolerance lets the same grid be described
+from float32 and from float64 coordinates; a grid half a cell away, which is what reading
+cell-centre coordinates as cell edges produces, is refused. The result has the columns of
+`weighted_sums` and equals what `weighted_sums` gives when the field is put on the pixels
+pixel-centre nearest, including the `nan_policy` choice. A stack `(slices, rows, cols)` gives
+a `slice` column.
+
+`ZoneCellWeights.from_table(table)` wraps a table that is still in memory, so the whole
+calculation can run without writing anything:
+`combine_zone_cell_weights([compute_zone_cell_weights_block(pairs, weight), ...], label=..., zone_set=...)`.
+
+### One transformed row and column instead of every pixel
+
+Pairing a pixel with a coarse cell needs the pixel's centre in the coarse grid's CRS. Between
+the equal-area block frame and lon/lat, longitude depends on the pixel's column alone and
+latitude on its row alone, so transforming one row and one column of centres gives every
+pixel's coordinates. `NearestIndexMap.build` takes that route only after checking it: it
+transforms a sample of lattice points one by one (33 positions per axis, edges and corners
+included) and requires every coordinate to equal the row-and-column one exactly. If any
+differs, or the middle row or column does not transform to finite coordinates, every centre
+is transformed as before. `centre_transform` on the lookup and on `ZoneCellPairs` says which
+route was taken, and each weight file records it. The check is a sample, not a proof.
+
+## Writing through another atomic writer
+
+Computing and writing are separate steps in both products. The `build_` and `collect_`
+functions above write with this package's own atomic writer (temp file beside the target,
+header or footer check, rename). A job that has to write through another one, such as a
+jobmon worker whose writes must enter idd-tools' task registry, calls the compute step and
+writes the result itself:
+
+```python
+from idd_tools.jobmon.atomic_io import AtomicRegistry, atomic_write, atomic_write_parquet
+
+from idd_spatial_analysis.lookup import (
+    compute_zone_cell_weights_block,
+    compute_zone_lookup_block,
+    zone_cell_weights_block_path,
+    zone_lookup_block_path,
+    zone_lookup_block_table_path,
+)
+
+with AtomicRegistry(directory, task_id=task_id, task_template=template) as registry:
+    block = compute_zone_lookup_block(zones_gdf, "zone_id", grid)
+    raster_path = zone_lookup_block_path(directory, key)
+    atomic_write(raster_path, block.write_raster)  # the raster first
+    registry.register(raster_path)
+    atomic_write_parquet(
+        block.zone_table(),
+        zone_lookup_block_table_path(directory, key),
+        registry=registry,
+        schema=block.table.schema,  # column types and build parameters
+    )
+
+    table = compute_zone_cell_weights_block(pairs, population)
+    atomic_write_parquet(
+        table.to_pandas(),
+        zone_cell_weights_block_path(weights_directory, label, key),
+        registry=registry,
+        schema=table.schema,
+    )
+```
+
+Passing the arrow schema keeps the explicit column types and the parameters in the schema
+metadata, which the collect steps require. `tests/lookup/test_idd_tools_writers.py` writes
+both products this way with idd-tools' real functions and collects them; it runs where the
+`jobmon` extra is installed and is skipped elsewhere.
+
+## Measured on the cluster, 2026-11-12
+
+Six blocks of `lsae_1285`, population of three years, annual mean temperature on a global 0.1
+degree grid. The pixel pass and the weight table use the same pixel-centre lookup and gave the
+same zone means (largest difference 6e-13 degrees over 4,581 zone-years).
 
 | Cost | Pixel pass | Weight table |
 |---|---|---|
@@ -178,6 +317,23 @@ gave the same zone means (largest difference 6e-13 degrees over 4,581 zone-years
 | Per block and year | 4.9 s (read population, put the surface on the pixels, sum), for every covariate and scenario | 1.2 s (read population, sum onto pairs), once per population year |
 | Per surface-year afterwards | the line above again | 0.003 s for the six blocks |
 
-Scaled by block count to the 528 blocks of `lsae_1285`, one surface-year costs about 43
-core-minutes as a pixel pass. The table costs about 86 core-minutes once plus 10 per
-population year, and a surface-year is then a product over the table's rows.
+Those timings transformed every pixel centre. With one transformed row and column, on the
+same six blocks:
+
+| Step, mean per block | Every pixel | Row and column |
+|---|---|---|
+| Pixel-to-cell lookup of the zoned pixels | 6.3 s | 0.6 s |
+| `ZoneCellPairs.build` in full (lookup, then grouping into pairs) | 9.8 s | 3.3 s (4.8 s for a block with every pixel zoned) |
+
+The two routes gave the same cell for every zoned pixel of all six blocks. What remains in
+`ZoneCellPairs.build` is the grouping of up to 67 million pixels into pairs.
+
+These are means over six blocks, one process at a time, on one node. They show what each step
+costs relative to the others; they are not a basis for sizing jobs, which comes from probes of
+the code that will run.
+
+## Not built yet
+
+The shared weight table for a frame: which population product, which years and which coarse
+grid it covers, its place in the output node, and the launcher and worker that build it
+through idd-tools' jobmon layer.

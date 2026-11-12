@@ -43,6 +43,11 @@ a distance at all. When code elsewhere needs a distance, it uses these, in any C
   are not exact binary fractions.
 - Pixel centres sit half a pixel in from the edges; every nearest lookup and every
   rasterization decides membership by the centre.
+- A nearest lookup between two CRSs moves the pixel centres into the other CRS. When x
+  depends on the column alone and y on the row alone (the equal-area block frame against
+  lon/lat), one row and one column of centres are transformed instead of every pixel, after
+  a sample of points transformed one by one has agreed with them exactly; otherwise every
+  centre is transformed. The result is the same either way (`docs/lookup.md`).
 - A field that arrives with coordinate arrays instead of a transform (a NetCDF variable with
   `longitude` and `latitude`) becomes a grid through `frame.grid_from_coords`, which requires
   `registration`: `"center"` when a coordinate is the middle of its cell, `"lower_left"` when

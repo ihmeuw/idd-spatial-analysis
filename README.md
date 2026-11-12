@@ -3,20 +3,22 @@
 Shared geospatial tools for IDD research code: block frames, admin boundaries,
 antimeridian-safe geometry, raster windows and regridding, zonal statistics, and lookup
 products built from them. It is a library first: it draws no maps (that is idd-figures) and
-runs no job scheduler (that is idd-tools). The one thing it produces is a small set of shared
-lookup products in its own output node (`docs/lookup.md`), built with functions and commands
-any consumer can run for a zone set of its own.
+holds no scheduler code of its own (that is idd-tools). The one thing it produces is a small
+set of shared lookup products in its own output node (`docs/lookup.md`), built with functions
+and commands any consumer can run for a zone set of its own. The jobs that build the shared
+products go through idd-tools' jobmon layer, which needs the cluster-only `jobmon` extra; no
+consumer of the library needs it.
 
 ## What is here
 
 | Subpackage | Purpose | Entry points |
 |---|---|---|
-| `frame` | The grid a block of pixels lives on and how blocks are chosen | `BlockGrid`, `grid_from_bounds`, `grid_from_coords`, `grid_from_raster`, `load_tile_index`, `block_grid`, `blocks_intersecting`, `block_for_point`, `bbox_in_crs` |
+| `frame` | The grid a block of pixels lives on and how blocks are chosen | `BlockGrid`, `grid_from_bounds`, `grid_from_coords`, `grid_from_raster`, `grids_match`, `load_tile_index`, `block_grid`, `blocks_intersecting`, `block_for_point`, `bbox_in_crs` |
 | `boundaries` | Admin polygons from a pinned release, population-model raking shapes and hierarchies | `AdminRelease`, `load_admin`, `copy_release`, `load_raking_shapes`, `load_hierarchy` |
 | `geometry` | Longitude conventions, bound strings, cell areas, points to zones, distances along the Earth | `to_lon_360`, `to_lon_180`, `split_antimeridian`, `parse_bound`, `cell_area_km2`, `grid_cell_areas_km2`, `points_to_zones`, `surface_distance`, `nearest_surface_distance` |
-| `raster` | Windows, mosaics, regridding, zone masks, atomic GeoTIFF writes | `read_window`, `mosaic`, `reproject_to_grid`, `NearestIndexMap`, `resample_masked`, `rasterize_zones`, `write_geotiff_atomic` |
+| `raster` | Windows, mosaics, regridding, zone masks, atomic GeoTIFF writes | `read_window`, `mosaic`, `reproject_to_grid`, `NearestIndexMap`, `resample_masked`, `rasterize_zones`, `write_geotiff_atomic`, `write_geotiff` |
 | `zonal` | Population-weighted sums, sparse zone weights and their application to a coarse field, hierarchy roll-up, nearest facility (surface metres) | `weighted_sums`, `zone_weights`, `ZoneCellPairs`, `apply_zone_weights`, `rollup_hierarchy`, `collate_blocks`, `nearest_facility_distance`, `share_within` |
-| `lookup` | Spatial assignments computed once and written to disk: the zone id of every pixel, per block | `build_zone_lookup_block`, `collect_zone_lookup`, `read_zone_lookup_block`, `load_zone_lookup_index`, `load_zone_lookup_summary`, `load_zone_lookup_metadata` |
+| `lookup` | Spatial assignments computed once and written to disk: the zone id of every pixel per block, and a weight raster summed onto pairs of zone and coarse cell | `build_zone_lookup_block`, `compute_zone_lookup_block`, `collect_zone_lookup`, `read_zone_lookup_block`, `load_zone_lookup_index`, `load_zone_lookup_summary`, `load_zone_lookup_metadata`, `build_zone_cell_weights_block`, `compute_zone_cell_weights_block`, `collect_zone_cell_weights`, `combine_zone_cell_weights`, `load_zone_cell_weights`, `ZoneCellWeights` |
 
 A raster is the pair `(array, BlockGrid)`: a 2-D numpy array and the grid that places it.
 Repos that keep their rasters as `rasterra.RasterArray` convert at the edge with
@@ -44,6 +46,11 @@ cp paths.yaml.example paths.yaml     # then fill in the roots described below
 
 Everything runs through `.venv/bin/python`; there is nothing to activate. Plain `uv sync`
 rebuilds the environment exactly from `uv.lock` (vet it with `uv sync --dry-run` first).
+
+To build the shared lookup products as cluster jobs, add `--extra jobmon`. That extra pulls
+the IHME jobmon client, which resolves only from the IHME artifactory and so only on the IHME
+network; `pyproject.toml` declares that index for it. Nothing else in the package needs it,
+and CI does not install it.
 
 ## Paths and data
 
@@ -99,6 +106,11 @@ and again, build their lookup once and read each block's mask from disk instead:
 `read_zone_lookup_block(directory, block_key)` replaces the `rasterize_zones` line
 (`docs/lookup.md`). `nan_policy` defaults to `"keep_weight"`, under which a missing value
 counts as zero; `"drop_pixel"` leaves such pixels out of both sums.
+
+When the value is on a coarser grid than the blocks (a 0.1 degree climate field), the loop
+over pixels is needed once per weight raster, not once per field: build the zone cell weights
+(`docs/lookup.md`), then `load_zone_cell_weights(directory, label).apply(field, field_grid)`
+returns the same two sums per zone for any field on that grid.
 
 The command line has three commands; `idd-spatial --help` lists them and their options.
 

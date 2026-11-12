@@ -15,8 +15,8 @@ said 3200 x 3200, which was wrong.
 |---|---|
 | One 8192 x 8192 float32 slice | 268 MB |
 | The int32 zone mask of a block | 268 MB in memory; 0.3 to 4.7 MB on disk as a zone lookup raster (median 0.9 MB) |
-| `NearestIndexMap`, same CRS (separable) | two 1-D int32 arrays, negligible |
-| `NearestIndexMap`, different CRS, no mask | two int32 arrays of the target shape, 537 MB for a block |
+| `NearestIndexMap`, same CRS, or two CRSs whose rows and columns transform independently (the block frame and lon/lat), no mask | two 1-D int32 arrays, negligible |
+| `NearestIndexMap`, any other pair of CRSs, no mask | two int32 arrays of the target shape, 537 MB for a block |
 | `NearestIndexMap` with a mask | proportional to the masked pixels, not the target |
 | `nearest_facility_distance` | Earth-centred coordinates of the zoned pixels (24 B per pixel; all at once for `within_zone=False`, one zone at a time otherwise, with `windows` narrowing where each zone's pixels are looked for) plus the KD-tree of the facilities |
 
