@@ -9,9 +9,10 @@ from affine import Affine
 from rasterio.windows import Window
 from shapely.geometry import box
 
-from idd_spatial_analysis.constants import WGS84
+from idd_spatial_analysis.constants import WGS84, WORLD_CYLINDRICAL_EQUAL_AREA
 from idd_spatial_analysis.frame import BlockGrid
 from idd_spatial_analysis.raster import rasterize_zones
+from idd_spatial_analysis.raster.zones import _near_grid
 
 
 def test_quadrants_mask_and_windows(grid: BlockGrid, zones_gdf: gpd.GeoDataFrame) -> None:
@@ -44,6 +45,39 @@ def test_zones_in_another_crs_give_the_same_mask(
     mask, _ = rasterize_zones(zones_gdf, "zone", grid)
     lonlat, _ = rasterize_zones(zones_gdf.to_crs(WGS84), "zone", grid)
     np.testing.assert_array_equal(lonlat, mask)
+
+
+def test_near_grid_keeps_the_nearby_rows_in_their_order(
+    grid: BlockGrid, zones_gdf: gpd.GeoDataFrame
+) -> None:
+    """Only the four quadrant zones reach the block; the fifth lies 14 km away."""
+    lonlat = zones_gdf.to_crs(WGS84).iloc[::-1]
+    near = _near_grid(lonlat, grid)
+    assert near["zone"].tolist() == [4, 3, 2, 1]
+    mask, _ = rasterize_zones(lonlat, "zone", grid)
+    expected, _ = rasterize_zones(zones_gdf, "zone", grid)
+    np.testing.assert_array_equal(mask, expected)
+
+
+def test_near_grid_keeps_every_row_when_the_box_cannot_be_drawn() -> None:
+    """A grid of the whole world has no lon/lat box narrower than 180 degrees."""
+    world = BlockGrid(
+        crs=WORLD_CYLINDRICAL_EQUAL_AREA,
+        transform=Affine(100_000.0, 0, -20_000_000.0, 0, -100_000.0, 6_300_000.0),
+        height=126,
+        width=400,
+    )
+    zones = gpd.GeoDataFrame(
+        {"zone": np.array([1, 2], dtype="int32")},
+        geometry=[box(-170, -10, -150, 10), box(150, -10, 170, 10)],
+        crs=WGS84,
+    )
+    assert _near_grid(zones, world)["zone"].tolist() == [1, 2]
+    mask, windows = rasterize_zones(zones, "zone", world)
+    assert set(windows) == {1, 2}
+    assert (mask == 1).sum() == (mask == 2).sum() > 0
+    assert (mask[:, :200] == 2).sum() == 0
+    assert (mask[:, 200:] == 1).sum() == 0
 
 
 def test_block_without_zones_is_empty(grid: BlockGrid) -> None:
