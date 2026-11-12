@@ -11,6 +11,8 @@ import yaml
 
 from idd_spatial_analysis.lookup import _io
 from idd_spatial_analysis.lookup._io import (
+    check_file_stem,
+    preview,
     read_parquet_checked,
     write_parquet_atomic,
     write_yaml_atomic,
@@ -82,3 +84,17 @@ def test_yaml_sidecar_keeps_key_order(tmp_path: Path) -> None:
     assert list(yaml.safe_load(target.read_text())) == list(data)
     assert yaml.safe_load(target.read_text()) == data
     assert [path.name for path in target.parent.iterdir()] == ["build.yaml"]
+
+
+def test_file_stems_must_be_plain_names() -> None:
+    for good in ("B-0000X-0000Y", "2020", "2020q1", "static.v2"):
+        check_file_stem(good, "label")
+    for bad in ("", ".", "..", "a/b", "/abs", "dir/"):
+        with pytest.raises(ValueError, match="label must be a plain file stem"):
+            check_file_stem(bad, "label")
+
+
+def test_preview_sorts_and_counts_what_it_leaves_out() -> None:
+    assert preview({"b", "a"}) == "['a', 'b']"
+    many = preview(range(25, 0, -1))
+    assert many == "[1, 2, 3, 4, 5, 6, 7, 8, 9, 10] (+15 more)"

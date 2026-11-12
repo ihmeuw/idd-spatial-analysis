@@ -13,11 +13,18 @@ one process per block is fine); the last three by ``collect_zone_lookup`` once e
 there. With the lookup on disk, a population-weighted mean per zone is ``zonal.weighted_sums``
 on a block's mask, weight and value, then ``zonal.collate_blocks`` across blocks: the polygons
 are never rasterized again.
+
+Computing a block and writing it are separate steps. ``compute_zone_lookup_block`` returns the
+block in memory and ``write_zone_lookup_block`` writes it with this package's atomic writers;
+``build_zone_lookup_block`` is the two together. A job that must write through another atomic
+writer (a jobmon worker using idd-tools' registry) calls the compute step and writes
+``ZoneLookupBlock.write_raster`` and ``ZoneLookupBlock.table`` to the two block paths itself.
 """
 
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -48,11 +55,13 @@ from idd_spatial_analysis.constants import (
 )
 from idd_spatial_analysis.frame.grid import grid_from_raster
 from idd_spatial_analysis.lookup._io import (
+    check_file_stem,
+    preview,
     read_parquet_checked,
     write_parquet_atomic,
     write_yaml_atomic,
 )
-from idd_spatial_analysis.raster.io import write_geotiff_atomic
+from idd_spatial_analysis.raster.io import write_geotiff, write_geotiff_atomic
 from idd_spatial_analysis.raster.zones import rasterize_zones
 
 if TYPE_CHECKING:
@@ -69,7 +78,6 @@ if TYPE_CHECKING:
 PRODUCT = "zone_lookup"
 SCHEMA_VERSION = 1
 _PARAMS_KEY = b"idd_spatial_analysis.zone_lookup"
-_SHOW = 10
 
 _BLOCK_SCHEMA = pa.schema(
     [
@@ -91,26 +99,15 @@ _SUMMARY_SCHEMA = pa.schema(
 )
 
 
-def _preview(values: Iterable[Any]) -> str:
-    items = sorted(values)
-    more = "" if len(items) <= _SHOW else f" (+{len(items) - _SHOW} more)"
-    return f"{items[:_SHOW]}{more}"
-
-
-def _check_block_key(block_key: str) -> None:
-    if not block_key or Path(block_key).name != block_key or block_key in {".", ".."}:
-        msg = f"block_key must be a plain file stem, got {block_key!r}"
-        raise ValueError(msg)
-
-
 def zone_lookup_block_path(directory: Path | str, block_key: str) -> Path:
     """Where the lookup raster of ``block_key`` lives under ``directory``."""
-    _check_block_key(block_key)
+    check_file_stem(block_key, "block_key")
     return Path(directory) / ZONE_LOOKUP_BLOCKS_DIR / f"{block_key}.tif"
 
 
-def _block_zones_path(directory: Path | str, block_key: str) -> Path:
-    _check_block_key(block_key)
+def zone_lookup_block_table_path(directory: Path | str, block_key: str) -> Path:
+    """Where the zone table of ``block_key`` lives under ``directory``."""
+    check_file_stem(block_key, "block_key")
     return Path(directory) / ZONE_LOOKUP_BLOCK_ZONES_DIR / f"{block_key}.parquet"
 
 
@@ -148,6 +145,67 @@ def _block_zone_table(
     return pa.Table.from_arrays(arrays, schema=schema)
 
 
+@dataclass(frozen=True, eq=False)
+class ZoneLookupBlock:
+    """One block of a zone lookup in memory: the mask, its grid and the block's zone table.
+
+    ``mask`` is int32 with ``0`` for no zone. ``table`` is the arrow table that becomes
+    ``block_zones/<block_key>.parquet``: ``zone``, ``pixel_count`` and the window holding the
+    zone's pixels, with explicit column types and the build parameters in its schema metadata,
+    which ``collect_zone_lookup`` requires. Whoever writes the block must put both on disk,
+    the raster first: a table on disk means the block is complete.
+    """
+
+    mask: NDArray[np.int32]
+    grid: BlockGrid
+    table: pa.Table
+
+    def write_raster(self, path: Path | str) -> Path:
+        """Write the mask as a lookup raster at exactly ``path``: no temp file, no rename.
+
+        The write step for an atomic writer that supplies those, for example
+        ``atomic_write(raster_path, block.write_raster)``.
+        """
+        return write_geotiff(path, self.mask, self.grid, nodata=ZONE_NODATA, dtype=ZONE_DTYPE)
+
+    def zone_table(self) -> pd.DataFrame:
+        """``table`` as a DataFrame with the same column types."""
+        out: pd.DataFrame = self.table.to_pandas()
+        return out
+
+
+def compute_zone_lookup_block(
+    zones_gdf: gpd.GeoDataFrame,
+    zone_col: str,
+    grid: BlockGrid,
+    *,
+    all_touched: bool = False,
+) -> ZoneLookupBlock:
+    """Rasterize ``zones_gdf`` on ``grid`` and return the block's mask and zone table; no file.
+
+    Membership is ``raster.rasterize_zones``'s: a pixel belongs to the zone containing its
+    centre (``all_touched=True``: any zone touching it), the later row wins where zones
+    overlap, and ``0`` marks pixels in no zone. ``zones_gdf`` may be the table of the whole
+    world; only the zones near the grid are reprojected. A block no zone reaches gives an
+    all-zero mask and an empty table.
+    """
+    mask, windows = rasterize_zones(zones_gdf, zone_col, grid, all_touched=all_touched)
+    table = _block_zone_table(mask, windows, _block_params(zone_col, grid, all_touched=all_touched))
+    return ZoneLookupBlock(mask=mask, grid=grid, table=table)
+
+
+def write_zone_lookup_block(block: ZoneLookupBlock, directory: Path | str, block_key: str) -> None:
+    """Write ``block`` under ``directory`` with this package's atomic writers.
+
+    The raster goes first and the table second, so a table on disk means the block is
+    complete. Files of the block that already exist are replaced.
+    """
+    raster_path = zone_lookup_block_path(directory, block_key)
+    table_path = zone_lookup_block_table_path(directory, block_key)
+    write_geotiff_atomic(raster_path, block.mask, block.grid, nodata=ZONE_NODATA, dtype=ZONE_DTYPE)
+    write_parquet_atomic(block.table, table_path)
+
+
 def build_zone_lookup_block(  # noqa: PLR0913  (zones, grid and destination are all needed)
     zones_gdf: gpd.GeoDataFrame,
     zone_col: str,
@@ -159,10 +217,8 @@ def build_zone_lookup_block(  # noqa: PLR0913  (zones, grid and destination are 
 ) -> pd.DataFrame:
     """Rasterize ``zones_gdf`` on ``grid`` and write the block's lookup raster and zone table.
 
-    Membership is ``raster.rasterize_zones``'s: a pixel belongs to the zone containing its
-    centre (``all_touched=True``: any zone touching it), the later row wins where zones
-    overlap, and ``0`` marks pixels in no zone. ``zones_gdf`` may be the table of the whole
-    world; only the zones near the grid are reprojected.
+    ``compute_zone_lookup_block`` followed by ``write_zone_lookup_block``; see the first for
+    which zone a pixel gets.
 
     Returns the block's zone table: ``zone``, ``pixel_count`` and the window (``row_off``,
     ``col_off``, ``height``, ``width``) that holds the zone's pixels in this block. A block no
@@ -171,14 +227,9 @@ def build_zone_lookup_block(  # noqa: PLR0913  (zones, grid and destination are 
     exist are replaced. The raster is written before the table, so a table on disk means the
     block is complete.
     """
-    raster_path = zone_lookup_block_path(directory, block_key)
-    table_path = _block_zones_path(directory, block_key)
-    mask, windows = rasterize_zones(zones_gdf, zone_col, grid, all_touched=all_touched)
-    table = _block_zone_table(mask, windows, _block_params(zone_col, grid, all_touched=all_touched))
-    write_geotiff_atomic(raster_path, mask, grid, nodata=ZONE_NODATA, dtype=ZONE_DTYPE)
-    write_parquet_atomic(table, table_path)
-    out: pd.DataFrame = table.to_pandas()
-    return out
+    block = compute_zone_lookup_block(zones_gdf, zone_col, grid, all_touched=all_touched)
+    write_zone_lookup_block(block, directory, block_key)
+    return block.zone_table()
 
 
 def read_zone_lookup_block(
@@ -238,10 +289,10 @@ def _check_blocks_present(directory: Path, keys: list[str]) -> None:
         key
         for key in keys
         if not zone_lookup_block_path(directory, key).exists()
-        or not _block_zones_path(directory, key).exists()
+        or not zone_lookup_block_table_path(directory, key).exists()
     ]
     if missing:
-        msg = f"{len(missing)} blocks are not built in {directory}: {_preview(missing)}"
+        msg = f"{len(missing)} blocks are not built in {directory}: {preview(missing)}"
         raise FileNotFoundError(msg)
     found = {path.stem for path in (directory / ZONE_LOOKUP_BLOCKS_DIR).glob("*.tif")}
     found |= {path.stem for path in (directory / ZONE_LOOKUP_BLOCK_ZONES_DIR).glob("*.parquet")}
@@ -249,7 +300,7 @@ def _check_blocks_present(directory: Path, keys: list[str]) -> None:
     if extra:
         msg = (
             f"{directory} holds {len(extra)} blocks that are not in block_keys: "
-            f"{_preview(extra)}; they belong to another build"
+            f"{preview(extra)}; they belong to another build"
         )
         raise ValueError(msg)
 
@@ -307,7 +358,7 @@ def collect_zone_lookup(
     tables: list[pa.Table] = []
     params: dict[str, Any] | None = None
     for key in keys:
-        table, block_params = _read_block_table(_block_zones_path(root, key))
+        table, block_params = _read_block_table(zone_lookup_block_table_path(root, key))
         if params is None:
             params = block_params
         elif block_params != params:
@@ -325,7 +376,7 @@ def collect_zone_lookup(
     index_df: pd.DataFrame = index.to_pandas()
     unknown = set(index_df[ZONE_COLUMN].tolist()) - set(ids.tolist())
     if unknown:
-        msg = f"{len(unknown)} zones in the blocks are not in zone_ids: {_preview(unknown)}"
+        msg = f"{len(unknown)} zones in the blocks are not in zone_ids: {preview(unknown)}"
         raise ValueError(msg)
 
     per_zone = index_df.groupby(ZONE_COLUMN)[PIXEL_COUNT_COLUMN].agg(["sum", "size"])

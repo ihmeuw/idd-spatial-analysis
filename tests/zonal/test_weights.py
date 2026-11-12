@@ -293,3 +293,66 @@ def test_apply_to_an_empty_table_gives_empty_sums(straddling: BlockGrid) -> None
     stacked = apply_zone_weights(empty, _field((2, *straddling.shape)))
     assert list(stacked.columns) == ["zone", "slice", "weighted_sum", "weight_sum"]
     assert stacked.empty
+
+
+def test_pairs_remember_their_grids_and_how_the_centres_were_transformed(
+    grid: BlockGrid, coarse: BlockGrid, mask: np.ndarray
+) -> None:
+    pairs = ZoneCellPairs.build(mask, grid, coarse)
+    assert pairs.grid == grid
+    assert pairs.coarse == coarse
+    assert pairs.centre_transform == "same_crs"
+    lonlat = grid_from_bounds(grid.lonlat_bounds(), 0.005, WGS84)
+    assert ZoneCellPairs.build(mask, grid, lonlat).centre_transform == "row_and_column"
+
+
+def test_weight_table_is_zone_weights_for_a_pairing_built_once(
+    grid: BlockGrid,
+    coarse: BlockGrid,
+    straddling: BlockGrid,
+    mask: np.ndarray,
+    population: np.ndarray,
+) -> None:
+    pairs = ZoneCellPairs.build(mask, grid, straddling)
+    pd.testing.assert_frame_equal(
+        pairs.weight_table(population), zone_weights(mask, population, grid, straddling)
+    )
+    assert pairs.uncovered_weight(population) == (0, 0.0)
+
+    # A pair whose pixels are all NaN is left out; one whose pixels are all zero stays.
+    aligned = ZoneCellPairs.build(mask, grid, coarse)
+    weight = np.ones(grid.shape, dtype="float32")
+    weight[0:4, 0:4] = np.nan
+    weight[0:4, 4:8] = 0.0
+    table = aligned.weight_table(weight)
+    cells = set(zip(table["coarse_row"].tolist(), table["coarse_col"].tolist(), strict=True))
+    assert (0, 0) not in cells
+    assert len(table) == len(aligned) - 1
+    zero = table.loc[(table["coarse_row"] == 0) & (table["coarse_col"] == 1), "weight"]
+    assert zero.tolist() == [0.0]
+    assert table["weight"].dtype == np.float64
+    assert table["zone"].dtype == np.int32
+
+    with pytest.raises(ValueError, match="does not match the block"):
+        pairs.weight_table(population[:10])
+    with pytest.raises(ValueError, match="does not match the block"):
+        pairs.uncovered_weight(population[:10])
+
+
+def test_uncovered_weight_counts_what_a_small_coarse_grid_loses(
+    grid: BlockGrid, mask: np.ndarray, population: np.ndarray
+) -> None:
+    west_half = BlockGrid(
+        crs=grid.crs, transform=Affine(400.0, 0, 0, 0, -400.0, 6400.0), height=16, width=8
+    )
+    pairs = ZoneCellPairs.build(mask, grid, west_half)
+    lost = population[:, 32:].astype(np.float64)
+    count, total = pairs.uncovered_weight(population)
+    assert count == int(np.isfinite(lost).sum())
+    assert total == pytest.approx(np.nansum(lost), rel=1e-12)
+    with pytest.raises(ValueError, match="fall outside the coarse grid"):
+        pairs.weight_table(population)
+    kept = pairs.weight_table(population, allow_uncovered=True)
+    assert kept["weight"].sum() == pytest.approx(
+        np.nansum(population[:, :32].astype(np.float64)), rel=1e-12
+    )

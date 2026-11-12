@@ -1,10 +1,11 @@
 """Sparse zone-by-coarse-cell weights: how a coarse grid's cells map onto zones.
 
 Three pieces. ``ZoneCellPairs`` works out, once per block and coarse grid, which coarse cell
-every zoned pixel falls in and groups those pixels into (zone, cell) pairs. ``zone_weights``
-adds one weight raster onto the pairs. ``apply_zone_weights`` turns a field on the coarse grid
-into the two sums per zone that ``weighted_sums`` gives on the fine grid, without touching the
-fine grid again.
+every zoned pixel falls in and groups those pixels into (zone, cell) pairs; its
+``weight_table`` adds one weight raster onto the pairs, and ``zone_weights`` is the two in one
+call. ``apply_zone_weights`` turns a field on the coarse grid into the two sums per zone that
+``weighted_sums`` gives on the fine grid, without touching the fine grid again. The stored
+product built from these, with its coarse grid recorded, is ``lookup.zone_cell_weights``.
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ if TYPE_CHECKING:
     from numpy.typing import NDArray
 
     from idd_spatial_analysis.frame.grid import BlockGrid
+    from idd_spatial_analysis.raster.regrid import CentreTransform
 
 _IMAGE_NDIM = 2
 _STACK_NDIM = 3
@@ -53,17 +55,21 @@ class ZoneCellPairs:
     ordered by zone, then coarse row, then coarse column. ``pixels`` are the flat indices of
     the zoned pixels the coarse grid covers and ``pair_of_pixel`` the pair of each;
     ``uncovered`` are the flat indices of zoned pixels whose centre lies outside the coarse
-    grid, which belong to no pair.
+    grid, which belong to no pair. ``grid`` and ``coarse`` are the two grids the pairing was
+    built for, and ``centre_transform`` how the pixel centres reached the coarse grid's CRS
+    (``raster.regrid.CentreTransform``).
     """
 
     zones: NDArray[np.int32]
     coarse_rows: NDArray[np.int32]
     coarse_cols: NDArray[np.int32]
     pixel_counts: NDArray[np.int64]
-    fine_shape: tuple[int, int]
+    grid: BlockGrid
+    coarse: BlockGrid
     pixels: NDArray[np.intp]
     pair_of_pixel: NDArray[np.intp]
     uncovered: NDArray[np.intp]
+    centre_transform: CentreTransform
 
     @classmethod
     def build(cls, mask: NDArray[Any], grid: BlockGrid, coarse: BlockGrid) -> ZoneCellPairs:
@@ -87,14 +93,21 @@ class ZoneCellPairs:
             coarse_rows=(cells // coarse.width).astype(np.int32),
             coarse_cols=(cells % coarse.width).astype(np.int32),
             pixel_counts=counts.astype(np.int64),
-            fine_shape=grid.shape,
+            grid=grid,
+            coarse=coarse,
             pixels=pixels,
             pair_of_pixel=np.asarray(inverse, dtype=np.intp).ravel(),
             uncovered=zoned[~covered],
+            centre_transform=lookup.centre_transform,
         )
 
     def __len__(self) -> int:
         return int(self.zones.size)
+
+    @property
+    def fine_shape(self) -> tuple[int, int]:
+        """The shape of the block the pairing was built on, which every weight raster must have."""
+        return self.grid.shape
 
     def _at_pixels(self, weight: NDArray[Any]) -> NDArray[np.float64]:
         """``weight`` at the paired pixels, as a fresh float64 array."""
@@ -128,6 +141,48 @@ class ZoneCellPairs:
             }
         )
 
+    def uncovered_weight(self, weight: NDArray[Any]) -> tuple[int, float]:
+        """The zoned pixels outside the coarse grid that carry a finite ``weight``: count and sum."""
+        raster = np.asarray(weight)
+        if raster.shape != self.fine_shape:
+            msg = f"weight shape {raster.shape} does not match the block {self.fine_shape}"
+            raise ValueError(msg)
+        lost = np.asarray(raster.ravel()[self.uncovered], dtype=np.float64)
+        weighted = np.isfinite(lost)
+        return int(weighted.sum()), float(lost[weighted].sum())
+
+    def weight_table(self, weight: NDArray[Any], *, allow_uncovered: bool = False) -> pd.DataFrame:
+        """``(zone, coarse_row, coarse_col, weight)``: ``weight`` summed over each pair's pixels.
+
+        A pair appears when at least one of its pixels has a finite weight, so a pair whose
+        weights are all zero stays and one whose weights are all NaN does not. A zoned pixel
+        with a finite weight whose centre lies outside the coarse grid is an error unless
+        ``allow_uncovered=True``, which leaves such pixels out.
+        """
+        lost_pixels, lost_weight = self.uncovered_weight(weight)
+        if lost_pixels and not allow_uncovered:
+            msg = (
+                f"{lost_pixels} zoned pixels carrying {lost_weight:.6g} of weight "
+                "fall outside the coarse grid; enlarge it or pass allow_uncovered=True"
+            )
+            raise ValueError(msg)
+        values = self._at_pixels(weight)
+        finite = np.isfinite(values)
+        values[~finite] = 0.0
+        sums = np.bincount(self.pair_of_pixel, weights=values, minlength=len(self))
+        if finite.all():
+            present = np.ones(len(self), dtype=bool)
+        else:
+            present = np.bincount(self.pair_of_pixel[finite], minlength=len(self)) > 0
+        return pd.DataFrame(
+            {
+                ZONE_COLUMN: self.zones[present],
+                COARSE_ROW_COLUMN: self.coarse_rows[present],
+                COARSE_COL_COLUMN: self.coarse_cols[present],
+                WEIGHT_COLUMN: np.asarray(sums, dtype=np.float64)[present],
+            }
+        )
+
 
 def zone_weights(
     mask: NDArray[Any],
@@ -145,32 +200,15 @@ def zone_weights(
     which drops such pixels. Applying these weights to a coarse field with
     ``apply_zone_weights`` gives weighted sums per zone without touching the fine grid again.
     For several weight rasters on the same block (one per year), build ``ZoneCellPairs`` once
-    and call its ``sum_weight`` per raster instead.
+    and call its ``weight_table`` per raster instead.
     """
     zone = np.asarray(mask)
-    w = np.asarray(weight, dtype=np.float64)
+    w = np.asarray(weight)
     check_zone_mask(zone)
     if zone.shape != grid.shape or w.shape != grid.shape:
         msg = f"mask {zone.shape} and weight {w.shape} must match the grid {grid.shape}"
         raise ValueError(msg)
-    pairs = ZoneCellPairs.build(zone, grid, coarse)
-    lost = w.ravel()[pairs.uncovered]
-    weighted = np.isfinite(lost)
-    if weighted.any() and not allow_uncovered:
-        msg = (
-            f"{int(weighted.sum())} zoned pixels carrying {lost[weighted].sum():.6g} of weight "
-            "fall outside the coarse grid; enlarge it or pass allow_uncovered=True"
-        )
-        raise ValueError(msg)
-    present = pairs.finite_count(w) > 0
-    return pd.DataFrame(
-        {
-            ZONE_COLUMN: pairs.zones[present],
-            COARSE_ROW_COLUMN: pairs.coarse_rows[present],
-            COARSE_COL_COLUMN: pairs.coarse_cols[present],
-            WEIGHT_COLUMN: pairs.sum_weight(w)[present],
-        }
-    )
+    return ZoneCellPairs.build(zone, grid, coarse).weight_table(w, allow_uncovered=allow_uncovered)
 
 
 def _empty_sums(*, stacked: bool) -> pd.DataFrame:

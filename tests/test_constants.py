@@ -37,3 +37,11 @@ def test_zone_lookup_node_is_a_relative_component_path() -> None:
 def test_zone_nodata_is_outside_every_zone() -> None:
     assert constants.ZONE_NODATA == 0
     assert constants.ZONE_DTYPE == "int32"
+
+
+def test_zone_cell_weights_directories_are_single_relative_components() -> None:
+    for name in (constants.ZONE_CELL_WEIGHTS_BLOCKS_DIR, constants.ZONE_CELL_WEIGHTS_DIR):
+        assert name
+        assert "/" not in name
+    assert constants.ZONE_CELL_WEIGHTS_BLOCKS_DIR != constants.ZONE_CELL_WEIGHTS_DIR
+    assert 0 < constants.GRID_MATCH_TOLERANCE < 0.5

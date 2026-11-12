@@ -12,7 +12,13 @@ from rasterio.windows import Window
 
 from idd_spatial_analysis.constants import WGS84
 from idd_spatial_analysis.frame import BlockGrid, bbox_in_crs, grid_from_raster
-from idd_spatial_analysis.raster import atomic_write, mosaic, read_window, write_geotiff_atomic
+from idd_spatial_analysis.raster import (
+    atomic_write,
+    mosaic,
+    read_window,
+    write_geotiff,
+    write_geotiff_atomic,
+)
 from idd_spatial_analysis.raster import io as raster_io
 
 if TYPE_CHECKING:
@@ -312,3 +318,25 @@ def test_atomic_write_replaces_only_on_success(tmp_path: Path) -> None:
     assert not (tmp_path / "a.txt.tmp").exists()
     atomic_write(target, lambda tmp: tmp.write_text("new"))
     assert target.read_text() == "new"
+
+
+def test_plain_write_geotiff_writes_the_given_path_with_the_same_checks(
+    tmp_path: Path, grid: BlockGrid, population: np.ndarray
+) -> None:
+    target = tmp_path / "plain.tif.tmp"
+    assert write_geotiff(target, population, grid, nodata=np.nan) == target
+    assert [path.name for path in tmp_path.iterdir()] == ["plain.tif.tmp"]
+    atomic = write_geotiff_atomic(tmp_path / "pop.tif", population, grid, nodata=np.nan)
+    with rasterio.open(target) as plain, rasterio.open(atomic) as through_rename:
+        assert plain.driver == "GTiff"
+        plain_profile, renamed_profile = dict(plain.profile), dict(through_rename.profile)
+        assert np.isnan(plain_profile.pop("nodata"))
+        assert np.isnan(renamed_profile.pop("nodata"))
+        assert plain_profile == renamed_profile
+        np.testing.assert_array_equal(plain.read(1), through_rename.read(1))
+    assert grid_from_raster(target) == grid
+    with pytest.raises(ValueError, match="does not match the grid"):
+        write_geotiff(tmp_path / "bad.tif", population[:10], grid, nodata=np.nan)
+    with pytest.raises(ValueError, match="not representable"):
+        write_geotiff(tmp_path / "bad.tif", np.ones(grid.shape, "int32"), grid, nodata=np.nan)
+    assert not (tmp_path / "bad.tif").exists()

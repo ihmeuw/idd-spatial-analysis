@@ -4,11 +4,23 @@
 because it needs the optional ``rasterra`` extra.
 """
 
-from idd_spatial_analysis.raster.io import atomic_write, mosaic, read_window, write_geotiff_atomic
-from idd_spatial_analysis.raster.regrid import NearestIndexMap, reproject_to_grid, resample_masked
+from idd_spatial_analysis.raster.io import (
+    atomic_write,
+    mosaic,
+    read_window,
+    write_geotiff,
+    write_geotiff_atomic,
+)
+from idd_spatial_analysis.raster.regrid import (
+    CentreTransform,
+    NearestIndexMap,
+    reproject_to_grid,
+    resample_masked,
+)
 from idd_spatial_analysis.raster.zones import rasterize_zones
 
 __all__ = [
+    "CentreTransform",
     "NearestIndexMap",
     "atomic_write",
     "mosaic",
@@ -16,5 +28,6 @@ __all__ = [
     "read_window",
     "reproject_to_grid",
     "resample_masked",
+    "write_geotiff",
     "write_geotiff_atomic",
 ]

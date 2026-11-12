@@ -2,7 +2,8 @@
 
 Schema and dtype checks on a real LBD release, whole-pixel block grids on the real tile
 index, raking shapes against the hierarchy's leaves, a zone lookup block against a fresh
-rasterization, and population conservation of the block weights on one real block. The
+rasterization, the row-and-column pixel lookup against the pointwise one on a real block, and
+population conservation of the block weights on one real block. The
 comparison of a block's zone weights against climate-aggregates' own population parquet
 (PROPOSED_STRUCTURE §Testing) is not here yet; see STATUS.md's parking lot.
 """
@@ -17,16 +18,27 @@ import pandas as pd
 import pytest
 
 from idd_spatial_analysis.boundaries import load_admin, load_hierarchy, load_raking_shapes
-from idd_spatial_analysis.constants import ADM_CODE_COLUMN, ADM_NAME_COLUMN, LOC_ID_COLUMN
+from idd_spatial_analysis.constants import (
+    ADM_CODE_COLUMN,
+    ADM_NAME_COLUMN,
+    LOC_ID_COLUMN,
+    WGS84,
+)
 from idd_spatial_analysis.frame import (
     block_bounds,
     block_grid,
     blocks_intersecting,
+    grid_from_coords,
     load_tile_index,
 )
 from idd_spatial_analysis.lookup import build_zone_lookup_block, read_zone_lookup_block
-from idd_spatial_analysis.raster import rasterize_zones, read_window
-from idd_spatial_analysis.zonal import rollup_hierarchy, weighted_sums, zone_weights
+from idd_spatial_analysis.raster import NearestIndexMap, rasterize_zones, read_window
+from idd_spatial_analysis.zonal import (
+    ZoneCellPairs,
+    rollup_hierarchy,
+    weighted_sums,
+    zone_weights,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -115,6 +127,38 @@ def test_zone_lookup_block_round_trips_on_a_real_block(
     ids, counts = np.unique(fresh[fresh > 0], return_counts=True)
     assert table["zone"].tolist() == ids.tolist()
     assert table["pixel_count"].tolist() == counts.tolist()
+
+
+def test_row_and_column_lookup_matches_every_pixel_on_a_real_block(
+    tile_index_path: Path, raking_root: Path, hierarchy_name: str
+) -> None:
+    """One transformed row and column place every zoned pixel in the cell the pointwise way does.
+
+    The coarse grid is a global 0.1 degree lon/lat grid described by cell-centre coordinates,
+    the shape climate fields arrive in.
+    """
+    resolution = float(os.environ.get("IDD_SPATIAL_QC_RESOLUTION", "100"))
+    tiles = load_tile_index(tile_index_path)
+    shapes = load_raking_shapes(raking_root, hierarchy_name)
+    block_key = os.environ.get("IDD_SPATIAL_QC_BLOCK_KEY") or blocks_intersecting(tiles, shapes)[0]
+    grid = block_grid(tiles, block_key, resolution)
+    lon = -179.95 + 0.1 * np.arange(3600)
+    lat = 89.95 - 0.1 * np.arange(1800)
+    coarse = grid_from_coords(lon, lat, WGS84, registration="center")
+    mask, _ = rasterize_zones(shapes, "location_id", grid)
+    zoned = mask != 0
+    assert zoned.sum() > MIN_CELLS
+    fast = NearestIndexMap.build(coarse, grid, target_mask=zoned)
+    full = NearestIndexMap.build(coarse, grid, target_mask=zoned, allow_row_and_column=False)
+    assert fast.centre_transform == "row_and_column"
+    assert full.centre_transform == "every_pixel"
+    np.testing.assert_array_equal(fast.rows, full.rows)
+    np.testing.assert_array_equal(fast.cols, full.cols)
+    assert (fast.rows >= 0).all()
+    pairs = ZoneCellPairs.build(mask, grid, coarse)
+    assert pairs.centre_transform == "row_and_column"
+    assert pairs.uncovered.size == 0
+    assert int(pairs.pixel_counts.sum()) == int(zoned.sum())
 
 
 def test_block_weights_conserve_population(

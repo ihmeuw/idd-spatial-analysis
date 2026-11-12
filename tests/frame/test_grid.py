@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pytest
 import rasterio
 from affine import Affine
+from pyproj import CRS
 from rasterio.windows import Window
 
 from idd_spatial_analysis.constants import WGS84, WORLD_CYLINDRICAL_EQUAL_AREA
@@ -14,6 +17,7 @@ from idd_spatial_analysis.frame import (
     grid_from_bounds,
     grid_from_coords,
     grid_from_raster,
+    grids_match,
 )
 from idd_spatial_analysis.frame.grid import check_nodata, pixel_quotient
 
@@ -245,3 +249,64 @@ def test_grid_from_coords_refuses_what_it_would_have_to_guess() -> None:
         grid_from_coords(lon, np.where(lat > 89.9, np.nan, lat), WGS84, registration="center")
     with pytest.raises(ValueError, match="not evenly spaced"):
         grid_from_coords(np.zeros(5), lat, WGS84, registration="center")
+
+
+def test_grid_round_trips_through_a_plain_dict(grid: BlockGrid) -> None:
+    lonlat = BlockGrid(
+        crs=WGS84, transform=Affine(0.1, 0, -180.0, 0, -0.1, 90.0), height=1800, width=3600
+    )
+    third = BlockGrid(
+        crs=WGS84, transform=Affine(1 / 3, 0, -73.3, 0, -1 / 120, 45.7), height=7, width=5
+    )
+    for original in (grid, lonlat, third):
+        data = original.to_dict()
+        assert sorted(data) == ["crs", "height", "transform", "width"]
+        assert len(data["transform"]) == 6
+        stored = json.loads(json.dumps(data))
+        assert stored == data
+        assert BlockGrid.from_dict(stored) == original
+    with pytest.raises(KeyError, match="transform"):
+        BlockGrid.from_dict({"crs": WGS84, "height": 1, "width": 1})
+
+
+def test_grids_match_allows_rounding_and_refuses_another_grid() -> None:
+    lon = -179.95 + 0.1 * np.arange(3600)
+    lat = 89.95 - 0.1 * np.arange(1800)
+    exact = grid_from_coords(lon, lat, WGS84, registration="center")
+    rounded = grid_from_coords(
+        lon.astype("float32"), lat.astype("float32"), WGS84, registration="center"
+    )
+    # float32 coordinates move the edges by a few hundred-thousandths of a cell, not to zero
+    offset = abs(rounded.bounds[0] - exact.bounds[0]) / 0.1
+    assert 0 < offset < 1e-3
+    assert rounded != exact
+    assert grids_match(exact, rounded)
+    assert grids_match(rounded, exact)
+    assert grids_match(exact, exact)
+
+    lower_left = grid_from_coords(lon, lat, WGS84, registration="lower_left")
+    assert not grids_match(exact, lower_left)
+    fewer_rows = grid_from_coords(lon, lat[:-1], WGS84, registration="center")
+    assert not grids_match(exact, fewer_rows)
+    coarser = grid_from_coords(lon[::2], lat[::2], WGS84, registration="center")
+    assert not grids_match(exact, coarser)
+    same_numbers_other_crs = BlockGrid(
+        crs="EPSG:4269", transform=exact.transform, height=exact.height, width=exact.width
+    )
+    assert not grids_match(exact, same_numbers_other_crs)
+    as_wkt = BlockGrid(
+        crs=CRS.from_user_input(WGS84).to_wkt(),
+        transform=exact.transform,
+        height=exact.height,
+        width=exact.width,
+    )
+    assert grids_match(exact, as_wkt)
+
+    shifted = BlockGrid(
+        crs=WGS84,
+        transform=Affine(0.1, 0, -180.0 + 0.001, 0, -0.1, 90.0),
+        height=1800,
+        width=3600,
+    )
+    assert not grids_match(exact, shifted)
+    assert grids_match(exact, shifted, tolerance=0.02)

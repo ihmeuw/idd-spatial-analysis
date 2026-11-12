@@ -11,7 +11,25 @@ import yaml
 from idd_spatial_analysis.raster.io import atomic_write
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     import pyarrow as pa
+
+_SHOW = 10
+
+
+def check_file_stem(value: str, name: str) -> None:
+    """Raise unless ``value`` can be a file name without its suffix: no separators, not empty."""
+    if not value or Path(value).name != value or value in {".", ".."}:
+        msg = f"{name} must be a plain file stem, got {value!r}"
+        raise ValueError(msg)
+
+
+def preview(values: Iterable[Any]) -> str:
+    """The first few of ``values``, sorted, and how many more there are; for error messages."""
+    items = sorted(values)
+    more = "" if len(items) <= _SHOW else f" (+{len(items) - _SHOW} more)"
+    return f"{items[:_SHOW]}{more}"
 
 
 def write_parquet_atomic(table: pa.Table, path: Path | str) -> Path:

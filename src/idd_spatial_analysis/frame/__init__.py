@@ -14,6 +14,7 @@ from idd_spatial_analysis.frame.grid import (
     grid_from_bounds,
     grid_from_coords,
     grid_from_raster,
+    grids_match,
 )
 
 __all__ = [
@@ -29,6 +30,7 @@ __all__ = [
     "grid_from_bounds",
     "grid_from_coords",
     "grid_from_raster",
+    "grids_match",
     "load_tile_index",
     "pad_bounds",
 ]

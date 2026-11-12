@@ -20,10 +20,12 @@ from rasterio.windows import transform as window_transform
 from idd_spatial_analysis.constants import (
     GEOTIFF_BLOCKSIZE,
     GEOTIFF_COMPRESSION,
+    GRID_MATCH_TOLERANCE,
     PIXEL_EDGE_DECIMALS,
     RASTER_FLOAT_DTYPE,
     WGS84,
 )
+from idd_spatial_analysis.crs import crs_equal
 from idd_spatial_analysis.frame.bounds import Bounds, bbox_in_crs, pad_bounds
 
 if TYPE_CHECKING:
@@ -198,6 +200,48 @@ class BlockGrid:
         if min(self.shape) >= GEOTIFF_BLOCKSIZE:
             profile.update(tiled=True, blockxsize=GEOTIFF_BLOCKSIZE, blockysize=GEOTIFF_BLOCKSIZE)
         return profile
+
+    def to_dict(self) -> dict[str, Any]:
+        """``crs``, ``transform`` (the six affine coefficients), ``height`` and ``width``.
+
+        Plain strings, floats and ints, so the grid can be stored in JSON or YAML beside a
+        product built for it; ``from_dict`` gives back an equal grid.
+        """
+        return {
+            "crs": self.crs,
+            "transform": [float(value) for value in self.transform[:6]],
+            "height": int(self.height),
+            "width": int(self.width),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> BlockGrid:
+        """The grid ``to_dict`` described; ``KeyError`` names a missing entry."""
+        return cls(
+            crs=str(data["crs"]),
+            transform=Affine(*(float(value) for value in data["transform"])),
+            height=int(data["height"]),
+            width=int(data["width"]),
+        )
+
+
+def grids_match(a: BlockGrid, b: BlockGrid, *, tolerance: float = GRID_MATCH_TOLERANCE) -> bool:
+    """True when ``a`` and ``b`` are the same grid: same CRS, same shape, same pixel edges.
+
+    Edges are compared with a tolerance, a share of one pixel (``GRID_MATCH_TOLERANCE`` by
+    default): no outer edge of ``b`` may lie further than that from the same edge of ``a``,
+    which bounds the offset of every pixel between them. Exact equality would refuse the same
+    grid described twice, once from float32 coordinates and once from float64; the tolerance
+    is far below the half pixel that a wrong registration moves a grid by.
+    """
+    if a.shape != b.shape or not crs_equal(a.crs, b.crs):
+        return False
+    xres, yres = a.resolution
+    a_left, a_bottom, a_right, a_top = a.bounds
+    b_left, b_bottom, b_right, b_top = b.bounds
+    off_x = max(abs(a_left - b_left), abs(a_right - b_right))
+    off_y = max(abs(a_top - b_top), abs(a_bottom - b_bottom))
+    return off_x <= tolerance * xres and off_y <= tolerance * yres
 
 
 def grid_from_bounds(

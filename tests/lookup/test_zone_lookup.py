@@ -18,11 +18,14 @@ from idd_spatial_analysis.constants import WGS84
 from idd_spatial_analysis.lookup import (
     build_zone_lookup_block,
     collect_zone_lookup,
+    compute_zone_lookup_block,
     load_zone_lookup_index,
     load_zone_lookup_metadata,
     load_zone_lookup_summary,
     read_zone_lookup_block,
+    write_zone_lookup_block,
     zone_lookup_block_path,
+    zone_lookup_block_table_path,
 )
 from idd_spatial_analysis.raster import rasterize_zones, write_geotiff_atomic
 from idd_spatial_analysis.zonal import collate_blocks, weighted_sums
@@ -269,3 +272,51 @@ def test_sums_from_the_lookup_match_rasterizing_again(
     assert got.equals(expected)
     numerator, denominator = got["weighted_sum"], got["weight_sum"]
     assert np.isfinite(numerator / denominator).all()
+
+
+def test_compute_then_write_is_what_build_does(
+    tmp_path: Path, grid: BlockGrid, zones_gdf: gpd.GeoDataFrame
+) -> None:
+    block = compute_zone_lookup_block(zones_gdf, "zone", grid)
+    assert not list(tmp_path.iterdir())
+    expected, _ = rasterize_zones(zones_gdf, "zone", grid)
+    np.testing.assert_array_equal(block.mask, expected)
+    assert block.mask.dtype == np.int32
+    assert block.grid == grid
+    assert block.zone_table()["zone"].tolist() == [1, 2, 3, 4]
+    assert block.zone_table()["zone"].dtype == np.int32
+
+    split, together = tmp_path / "split", tmp_path / "together"
+    write_zone_lookup_block(block, split, "b")
+    table = build_zone_lookup_block(zones_gdf, "zone", grid, together, "b")
+    assert table.equals(block.zone_table())
+    assert zone_lookup_block_table_path(split, "b") == split / "block_zones" / "b.parquet"
+    for name in ("blocks/b.tif", "block_zones/b.parquet"):
+        assert (split / name).exists()
+        assert (together / name).exists()
+    got, got_grid = read_zone_lookup_block(split, "b")
+    want, want_grid = read_zone_lookup_block(together, "b")
+    np.testing.assert_array_equal(got, want)
+    assert got_grid == want_grid
+    one = pq.read_table(zone_lookup_block_table_path(split, "b"))
+    other = pq.read_table(zone_lookup_block_table_path(together, "b"))
+    assert one.equals(other)
+    assert one.schema.metadata == other.schema.metadata
+    for bad in ("", "..", "a/b"):
+        with pytest.raises(ValueError, match="block_key must be a plain file stem"):
+            zone_lookup_block_table_path(tmp_path, bad)
+
+
+def test_write_raster_writes_exactly_the_path_it_is_given(
+    tmp_path: Path, grid: BlockGrid, zones_gdf: gpd.GeoDataFrame
+) -> None:
+    """The write step a foreign atomic writer is handed: its temp path, nothing else."""
+    block = compute_zone_lookup_block(zones_gdf, "zone", grid)
+    target = tmp_path / "B-0000X-0000Y.tif.tmp"
+    assert block.write_raster(target) == target
+    assert [path.name for path in tmp_path.iterdir()] == ["B-0000X-0000Y.tif.tmp"]
+    with rasterio.open(target) as src:
+        assert src.driver == "GTiff"
+        assert src.dtypes == ("int32",)
+        assert src.nodata == 0
+        np.testing.assert_array_equal(src.read(1), block.mask)

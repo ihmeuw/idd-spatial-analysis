@@ -147,7 +147,8 @@ def atomic_write(path: Path | str, write_fn: Callable[[Path], object]) -> None:
     The temp file sits beside the target with the extra suffix ``.tmp``; on any exception it is
     removed and the exception re-raised, so the target is never left half written. Same
     contract as ``idd_tools.jobmon.atomic_io.atomic_write``, copied here because that module's
-    package imports the jobmon client, which this repo does not declare.
+    package imports the jobmon client, which only the cluster-only ``jobmon`` extra installs;
+    the library must write without it.
     """
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -222,6 +223,58 @@ def _check_header(path: Path, grid: BlockGrid, dtype: np.dtype[Any], count: int)
         raise ValueError(msg)
 
 
+def _geotiff_writer(
+    array: NDArray[Any], grid: BlockGrid, nodata: float | None, dtype: str | None
+) -> Callable[[Path], None]:
+    """Validate ``array`` for ``grid`` and return the function that writes it to a given path.
+
+    Every check on the inputs happens here, before any file or directory is touched; the
+    returned function writes the bands and compares the file's header with the request.
+    """
+    data = np.asarray(array)
+    if data.ndim == _IMAGE_NDIM:
+        data = data[np.newaxis]
+    elif data.ndim != _STACK_NDIM:
+        msg = f"array must be 2-D or 3-D (bands first), got shape {data.shape}"
+        raise ValueError(msg)
+    if data.shape[1:] != grid.shape:
+        msg = f"array shape {data.shape[1:]} does not match the grid {grid.shape}"
+        raise ValueError(msg)
+    out_dtype = check_nodata(dtype if dtype is not None else data.dtype, nodata)
+    data = _narrow(data, out_dtype, nodata)
+    count = int(data.shape[0])
+    profile = grid.profile(dtype=out_dtype.name, nodata=nodata, count=count)
+
+    def _write(path: Path) -> None:
+        with rasterio.open(path, "w", **profile) as dst:
+            dst.write(data)
+        _check_header(path, grid, out_dtype, count)
+
+    return _write
+
+
+def write_geotiff(
+    path: Path | str,
+    array: NDArray[Any],
+    grid: BlockGrid,
+    *,
+    nodata: float | None,
+    dtype: str | None = None,
+) -> Path:
+    """Write ``array`` on ``grid`` as a compressed GeoTIFF at exactly ``path``; check its header.
+
+    The write step alone, with the same checks as ``write_geotiff_atomic`` and no temp file or
+    rename: for a caller that supplies those, such as a jobmon worker handing this to
+    idd-tools' ``atomic_write`` so the file enters that task's registry. The file is a GeoTIFF
+    whatever ``path``'s suffix is, so a temp name such as ``block.tif.tmp`` is fine. Called
+    directly on a final path it can leave a half-written file behind; use
+    ``write_geotiff_atomic`` for that.
+    """
+    target = Path(path)
+    _geotiff_writer(array, grid, nodata, dtype)(target)
+    return target
+
+
 def write_geotiff_atomic(
     path: Path | str,
     array: NDArray[Any],
@@ -238,25 +291,6 @@ def write_geotiff_atomic(
     file's header (shape, count, dtype, CRS, transform) is checked against the request; the
     pixels are never read back.
     """
-    data = np.asarray(array)
-    if data.ndim == _IMAGE_NDIM:
-        data = data[np.newaxis]
-    elif data.ndim != _STACK_NDIM:
-        msg = f"array must be 2-D or 3-D (bands first), got shape {data.shape}"
-        raise ValueError(msg)
-    if data.shape[1:] != grid.shape:
-        msg = f"array shape {data.shape[1:]} does not match the grid {grid.shape}"
-        raise ValueError(msg)
-    out_dtype = check_nodata(dtype if dtype is not None else data.dtype, nodata)
-    data = _narrow(data, out_dtype, nodata)
-    count = int(data.shape[0])
-    profile = grid.profile(dtype=out_dtype.name, nodata=nodata, count=count)
     target = Path(path)
-
-    def _write(tmp: Path) -> None:
-        with rasterio.open(tmp, "w", **profile) as dst:
-            dst.write(data)
-        _check_header(tmp, grid, out_dtype, count)
-
-    atomic_write(target, _write)
+    atomic_write(target, _geotiff_writer(array, grid, nodata, dtype))
     return target

@@ -50,6 +50,11 @@ PIXEL_EDGE_DECIMALS: Final = 6
 """Pixel-index quotients are rounded to this many decimals before floor or ceil, so a coordinate
 within a millionth of a pixel of an edge counts as on it. Grids with non-binary steps such as
 1/120 degree otherwise land one pixel off."""
+GRID_MATCH_TOLERANCE: Final = 1e-3
+"""Two descriptions of a grid count as the same grid when no pixel edge differs by more than
+this share of a pixel (``frame.grids_match``). Coordinates stored as float32 put a 0.1 degree
+global grid's edges about 3e-5 of a cell from their float64 positions; a registration mistake
+moves them by half a cell."""
 GEOCENTRIC_CRS: Final = "EPSG:4978"
 """Earth-centred Cartesian metres; distances between points are measured here."""
 
@@ -88,3 +93,8 @@ ZONE_LOOKUP_BLOCK_ZONES_DIR: Final = "block_zones"
 ZONE_LOOKUP_INDEX_FILENAME: Final = "zones.parquet"
 ZONE_LOOKUP_SUMMARY_FILENAME: Final = "zone_summary.parquet"
 ZONE_LOOKUP_METADATA_FILENAME: Final = "build.yaml"
+
+ZONE_CELL_WEIGHTS_BLOCKS_DIR: Final = "block_weights"
+"""Per block and weight raster: ``block_weights/<label>/<block_key>.parquet``."""
+ZONE_CELL_WEIGHTS_DIR: Final = "weights"
+"""Per weight raster, the blocks added up: ``weights/<label>.parquet``."""
