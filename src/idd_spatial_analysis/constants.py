@@ -71,3 +71,20 @@ SHARE_COLUMN: Final = "share"
 
 # Where the CLI materialises an LBD release under a project's output node
 ADMIN_SHAPEFILES_DIR: Final = "admin_shapefiles"
+
+# Lookup products (lookup/): built once, read by every consumer
+PIXEL_COUNT_COLUMN: Final = "pixel_count"
+BLOCK_COUNT_COLUMN: Final = "block_count"
+ROW_OFF_COLUMN: Final = "row_off"
+COL_OFF_COLUMN: Final = "col_off"
+HEIGHT_COLUMN: Final = "height"
+WIDTH_COLUMN: Final = "width"
+
+ZONE_LOOKUP_NODE: Final = "02-processed_data/zone_lookup/{zone_set}/{resolution}m"
+"""The versioned component of one zone lookup under ``project_output_root`` (STANDARDS §Output
+management): its ``working/`` slot, snapshots and ``current`` live inside this directory."""
+ZONE_LOOKUP_BLOCKS_DIR: Final = "blocks"
+ZONE_LOOKUP_BLOCK_ZONES_DIR: Final = "block_zones"
+ZONE_LOOKUP_INDEX_FILENAME: Final = "zones.parquet"
+ZONE_LOOKUP_SUMMARY_FILENAME: Final = "zone_summary.parquet"
+ZONE_LOOKUP_METADATA_FILENAME: Final = "build.yaml"

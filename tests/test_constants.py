@@ -28,6 +28,12 @@ def test_filename_templates_format() -> None:
     assert constants.TILE_INDEX_RESOLUTION_DIR.format(resolution=100) == "100m"
 
 
+def test_zone_lookup_node_is_a_relative_component_path() -> None:
+    node = constants.ZONE_LOOKUP_NODE.format(zone_set="lsae_1285", resolution=100)
+    assert node == "02-processed_data/zone_lookup/lsae_1285/100m"
+    assert not node.startswith("/")
+
+
 def test_zone_nodata_is_outside_every_zone() -> None:
     assert constants.ZONE_NODATA == 0
     assert constants.ZONE_DTYPE == "int32"

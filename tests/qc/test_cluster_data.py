@@ -1,10 +1,10 @@
 """Checks against the cluster data named in paths.yaml.
 
 Schema and dtype checks on a real LBD release, whole-pixel block grids on the real tile
-index, raking shapes against the hierarchy's leaves, and population conservation of the
-block weights on one real block. The comparison of a block's zone weights against
-climate-aggregates' own population parquet (PROPOSED_STRUCTURE §Testing) is not here yet; see
-STATUS.md's parking lot.
+index, raking shapes against the hierarchy's leaves, a zone lookup block against a fresh
+rasterization, and population conservation of the block weights on one real block. The
+comparison of a block's zone weights against climate-aggregates' own population parquet
+(PROPOSED_STRUCTURE §Testing) is not here yet; see STATUS.md's parking lot.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from idd_spatial_analysis.frame import (
     blocks_intersecting,
     load_tile_index,
 )
+from idd_spatial_analysis.lookup import build_zone_lookup_block, read_zone_lookup_block
 from idd_spatial_analysis.raster import rasterize_zones, read_window
 from idd_spatial_analysis.zonal import rollup_hierarchy, weighted_sums, zone_weights
 
@@ -93,6 +94,27 @@ def test_raking_shapes_roll_up_through_the_hierarchy(
     assert len(root) == 1
     assert root["weight_sum"].item() == pytest.approx(len(known))
     assert np.allclose(rolled["mean"], 1.0)
+
+
+def test_zone_lookup_block_round_trips_on_a_real_block(
+    tmp_path: Path, tile_index_path: Path, raking_root: Path, hierarchy_name: str
+) -> None:
+    """A real block's stored lookup is the mask a fresh rasterization gives, pixel for pixel."""
+    resolution = float(os.environ.get("IDD_SPATIAL_QC_RESOLUTION", "100"))
+    tiles = load_tile_index(tile_index_path)
+    shapes = load_raking_shapes(raking_root, hierarchy_name)
+    block_key = os.environ.get("IDD_SPATIAL_QC_BLOCK_KEY") or blocks_intersecting(tiles, shapes)[0]
+    grid = block_grid(tiles, block_key, resolution)
+    table = build_zone_lookup_block(shapes, "location_id", grid, tmp_path, block_key)
+    stored, stored_grid = read_zone_lookup_block(tmp_path, block_key)
+    fresh, _ = rasterize_zones(shapes, "location_id", grid)
+    assert stored_grid == grid
+    assert (fresh > 0).sum() > MIN_CELLS
+    np.testing.assert_array_equal(stored, fresh)
+    assert table["pixel_count"].sum() == (fresh > 0).sum()
+    ids, counts = np.unique(fresh[fresh > 0], return_counts=True)
+    assert table["zone"].tolist() == ids.tolist()
+    assert table["pixel_count"].tolist() == counts.tolist()
 
 
 def test_block_weights_conserve_population(

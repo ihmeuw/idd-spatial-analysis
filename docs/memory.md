@@ -1,17 +1,22 @@
 # Memory: blocks, windows and what each function allocates
 
-The package never loads a country-sized raster. Work is done per block of the tile index
-(3200 x 3200 pixels at 100 m), per window inside a block, or per slice of a stack, and partial
-results are small tables that `zonal.collate_blocks` adds up.
+The package never loads a country-sized raster. Work is done per block of the tile index, per
+window inside a block, or per slice of a stack, and partial results are small tables that
+`zonal.collate_blocks` adds up.
+
+A block of the 100 m tile index is 8192 x 8192 pixels (819.2 km on a side). Measured on the
+cluster on 2026-11-11: 784 blocks in 49 columns and 16 rows, 720 of them full size, the last
+column 7535 pixels wide and the last row 4398 pixels tall. An earlier version of this page
+said 3200 x 3200, which was wrong.
 
 ## Sizes to keep in mind
 
 | Object | Size |
 |---|---|
-| One 3200 x 3200 float32 slice | 41 MB |
-| The int32 zone mask of a block | 41 MB |
+| One 8192 x 8192 float32 slice | 268 MB |
+| The int32 zone mask of a block | 268 MB in memory; 0.3 to 4.7 MB on disk as a zone lookup raster (median 0.9 MB) |
 | `NearestIndexMap`, same CRS (separable) | two 1-D int32 arrays, negligible |
-| `NearestIndexMap`, different CRS, no mask | two int32 arrays of the target shape, 82 MB for a block |
+| `NearestIndexMap`, different CRS, no mask | two int32 arrays of the target shape, 537 MB for a block |
 | `NearestIndexMap` with a mask | proportional to the masked pixels, not the target |
 | `nearest_facility_distance` | Earth-centred coordinates of the zoned pixels (24 B per pixel; all at once for `within_zone=False`, one zone at a time otherwise, with `windows` narrowing where each zone's pixels are looked for) plus the KD-tree of the facilities |
 
