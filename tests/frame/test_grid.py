@@ -9,7 +9,12 @@ from affine import Affine
 from rasterio.windows import Window
 
 from idd_spatial_analysis.constants import WGS84, WORLD_CYLINDRICAL_EQUAL_AREA
-from idd_spatial_analysis.frame import BlockGrid, grid_from_bounds, grid_from_raster
+from idd_spatial_analysis.frame import (
+    BlockGrid,
+    grid_from_bounds,
+    grid_from_coords,
+    grid_from_raster,
+)
 from idd_spatial_analysis.frame.grid import check_nodata, pixel_quotient
 
 
@@ -168,3 +173,75 @@ def test_grid_from_raster_round_trips(tmp_path, grid: BlockGrid) -> None:
     assert read.shape == grid.shape
     assert read.transform == grid.transform
     assert read.crs == grid.crs
+
+
+def _global_tenth_degree() -> tuple[np.ndarray, np.ndarray]:
+    """Cell-centre coordinates of a global 0.1 degree field, columns west to east, rows north to south."""
+    return np.arange(3600) * 0.1 - 179.95, 89.95 - np.arange(1800) * 0.1
+
+
+def test_grid_from_center_coordinates_spans_the_globe() -> None:
+    lon, lat = _global_tenth_degree()
+    grid = grid_from_coords(lon, lat, WGS84, registration="center")
+    assert grid.shape == (1800, 3600)
+    assert grid.resolution == pytest.approx((0.1, 0.1))
+    assert grid.bounds == pytest.approx((-180.0, -90.0, 180.0, 90.0))
+    xs, ys = grid.pixel_centers()
+    np.testing.assert_allclose(xs, lon, atol=1e-9)
+    np.testing.assert_allclose(ys, lat, atol=1e-9)
+    rows, cols = grid.rowcol(np.array([-179.99, 0.01, 179.99]), np.array([89.99, 0.01, -89.99]))
+    assert cols.tolist() == [0, 1800, 3599]
+    assert rows.tolist() == [0, 899, 1799]
+
+
+def test_lower_left_registration_sits_half_a_cell_north_east_of_center() -> None:
+    lon, lat = _global_tenth_degree()
+    center = grid_from_coords(lon, lat, WGS84, registration="center")
+    lower_left = grid_from_coords(lon, lat, WGS84, registration="lower_left")
+    assert lower_left.shape == center.shape
+    assert lower_left.bounds == pytest.approx((-179.95, -89.95, 180.05, 90.05))
+    # A point just east and north of a cell centre is in that cell either way; a point just
+    # west and south of it belongs to the neighbouring cell under lower_left.
+    xs, ys = np.array([10.06, 10.04]), np.array([20.06, 20.04])
+    center_rows, center_cols = center.rowcol(xs, ys)
+    shifted_rows, shifted_cols = lower_left.rowcol(xs, ys)
+    assert lon[center_cols].tolist() == pytest.approx([10.05, 10.05])
+    assert lat[center_rows].tolist() == pytest.approx([20.05, 20.05])
+    assert lon[shifted_cols].tolist() == pytest.approx([10.05, 9.95])
+    assert lat[shifted_rows].tolist() == pytest.approx([20.05, 19.95])
+
+
+def test_grid_from_coords_takes_float32_coordinates_and_any_metric_crs() -> None:
+    lon, lat = _global_tenth_degree()
+    as_float32 = grid_from_coords(
+        lon.astype("float32"), lat.astype("float32"), WGS84, registration="center"
+    )
+    assert as_float32.bounds == pytest.approx((-180.0, -90.0, 180.0, 90.0), abs=1e-4)
+    metric = grid_from_coords(
+        np.array([500.0, 1500.0, 2500.0]),
+        np.array([2500.0, 1500.0, 500.0]),
+        WORLD_CYLINDRICAL_EQUAL_AREA,
+        registration="center",
+    )
+    assert metric.bounds == (0.0, 0.0, 3000.0, 3000.0)
+    assert metric.transform == Affine(1000.0, 0.0, 0.0, 0.0, -1000.0, 3000.0)
+
+
+def test_grid_from_coords_refuses_what_it_would_have_to_guess() -> None:
+    lon, lat = _global_tenth_degree()
+    with pytest.raises(ValueError, match="reverse the field's rows"):
+        grid_from_coords(lon, lat[::-1], WGS84, registration="center")
+    with pytest.raises(ValueError, match="xs must ascend"):
+        grid_from_coords(lon[::-1], lat, WGS84, registration="center")
+    with pytest.raises(ValueError, match="registration must be one of"):
+        grid_from_coords(lon, lat, WGS84, registration="corner")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="xs are not evenly spaced"):
+        grid_from_coords(np.array([0.0, 0.1, 0.3]), lat, WGS84, registration="center")
+    with pytest.raises(ValueError, match="at least two"):
+        grid_from_coords(lon[:1], lat, WGS84, registration="center")
+    with pytest.raises(ValueError, match="at least two"):
+        grid_from_coords(lon.reshape(60, 60), lat, WGS84, registration="center")
+    with pytest.raises(ValueError, match="NaN or infinite"):
+        grid_from_coords(lon, np.where(lat > 89.9, np.nan, lat), WGS84, registration="center")
+    with pytest.raises(ValueError, match="not evenly spaced"):
+        grid_from_coords(np.zeros(5), lat, WGS84, registration="center")

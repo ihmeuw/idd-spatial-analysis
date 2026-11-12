@@ -3,10 +3,12 @@
 from idd_spatial_analysis.zonal.distance import nearest_facility_distance, share_within
 from idd_spatial_analysis.zonal.hierarchy import rollup_hierarchy
 from idd_spatial_analysis.zonal.sums import NanPolicy, collate_blocks, weighted_sums
-from idd_spatial_analysis.zonal.weights import zone_weights
+from idd_spatial_analysis.zonal.weights import ZoneCellPairs, apply_zone_weights, zone_weights
 
 __all__ = [
     "NanPolicy",
+    "ZoneCellPairs",
+    "apply_zone_weights",
     "collate_blocks",
     "nearest_facility_distance",
     "rollup_hierarchy",

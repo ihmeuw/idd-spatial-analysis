@@ -40,7 +40,9 @@ reads it and checks the CRS and the `block_key` column; it raises on anything el
   explicit integer nodata or `None`.
 
 `grid_from_bounds(bounds, resolution, crs)` builds a grid for arbitrary bounds and
-`grid_from_raster(path)` reads one from a file.
+`grid_from_raster(path)` reads one from a file. `grid_from_coords(xs, ys, crs, registration=...)`
+builds the grid that a field's coordinate arrays label: `xs` ascending, `ys` descending, evenly
+spaced, and `registration` stated (`"center"` or `"lower_left"`, no default).
 
 ## Bounds across CRSs
 

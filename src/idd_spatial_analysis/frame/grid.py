@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, get_args
 
 import numpy as np
 import rasterio
@@ -223,6 +223,70 @@ def grid_from_bounds(
         transform=Affine(xres, 0.0, left, 0.0, -yres, top),
         height=height,
         width=width,
+    )
+
+
+CoordinateRegistration = Literal["center", "lower_left"]
+"""What one coordinate value marks on a regular grid: the middle of its cell, or the cell's
+western and southern edges."""
+
+_SPACING_TOLERANCE = 0.01
+"""Largest departure of any coordinate step from the mean step, as a share of that step. Loose
+enough for coordinates stored as float32, tight enough to refuse a gap or a Gaussian grid."""
+_MIN_COORDS = 2
+
+
+def _even_step(values: NDArray[np.float64], name: str) -> float:
+    """The common step of evenly spaced coordinates; raises when they are not."""
+    if values.ndim != 1 or values.size < _MIN_COORDS:
+        msg = f"{name} must be a 1-D array of at least two coordinates, got shape {values.shape}"
+        raise ValueError(msg)
+    if not np.isfinite(values).all():
+        msg = f"{name} holds NaN or infinite coordinates"
+        raise ValueError(msg)
+    step = float((values[-1] - values[0]) / (values.size - 1))
+    if step == 0 or float(np.abs(np.diff(values) - step).max()) > _SPACING_TOLERANCE * abs(step):
+        msg = f"{name} are not evenly spaced"
+        raise ValueError(msg)
+    return step
+
+
+def grid_from_coords(
+    xs: NDArray[Any], ys: NDArray[Any], crs: str, *, registration: CoordinateRegistration
+) -> BlockGrid:
+    """The north-up grid whose cells the coordinate arrays of a field label.
+
+    ``xs`` must ascend (west to east) and ``ys`` descend (north to south), which is the order
+    of the field's columns and rows; both must be evenly spaced. ``registration`` says what a
+    coordinate marks and has no default, because half a cell hangs on it: ``"center"`` puts
+    each coordinate in the middle of its cell, ``"lower_left"`` on the cell's western and
+    southern edges. A field stored south to north must have its rows, and its ``ys``, reversed
+    before it is described here; nothing is flipped silently.
+    """
+    if registration not in get_args(CoordinateRegistration):
+        msg = (
+            f"registration must be one of {get_args(CoordinateRegistration)}, got {registration!r}"
+        )
+        raise ValueError(msg)
+    x = np.asarray(xs, dtype=np.float64)
+    y = np.asarray(ys, dtype=np.float64)
+    dx = _even_step(x, "xs")
+    dy = _even_step(y, "ys")
+    if dx < 0:
+        msg = "xs must ascend (west to east)"
+        raise ValueError(msg)
+    if dy > 0:
+        msg = "ys must descend (north to south); reverse the field's rows and its ys first"
+        raise ValueError(msg)
+    if registration == "center":
+        left, top = float(x[0]) - dx / 2, float(y[0]) - dy / 2
+    else:
+        left, top = float(x[0]), float(y[0]) - dy
+    return BlockGrid(
+        crs=crs,
+        transform=Affine(dx, 0.0, left, 0.0, dy, top),
+        height=int(y.size),
+        width=int(x.size),
     )
 
 
