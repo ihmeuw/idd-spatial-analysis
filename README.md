@@ -1,25 +1,28 @@
 # idd-spatial-analysis
 
 Shared geospatial tools for IDD research code: block frames, admin boundaries,
-antimeridian-safe geometry, raster windows and regridding, and zonal statistics. It is a
-library, not a pipeline: it owns no outputs, draws no maps (that is idd-figures) and runs no
-jobs (that is idd-tools).
+antimeridian-safe geometry, raster windows and regridding, zonal statistics, and lookup
+products built from them. It is a library first: it draws no maps (that is idd-figures) and
+runs no job scheduler (that is idd-tools). The one thing it produces is a small set of shared
+lookup products in its own output node (`docs/lookup.md`), built with functions and commands
+any consumer can run for a zone set of its own.
 
 ## What is here
 
 | Subpackage | Purpose | Entry points |
 |---|---|---|
-| `frame` | The grid a block of pixels lives on and how blocks are chosen | `BlockGrid`, `grid_from_bounds`, `grid_from_raster`, `load_tile_index`, `block_grid`, `blocks_intersecting`, `block_for_point`, `bbox_in_crs` |
+| `frame` | The grid a block of pixels lives on and how blocks are chosen | `BlockGrid`, `grid_from_bounds`, `grid_from_coords`, `grid_from_raster`, `load_tile_index`, `block_grid`, `blocks_intersecting`, `block_for_point`, `bbox_in_crs` |
 | `boundaries` | Admin polygons from a pinned release, population-model raking shapes and hierarchies | `AdminRelease`, `load_admin`, `copy_release`, `load_raking_shapes`, `load_hierarchy` |
 | `geometry` | Longitude conventions, bound strings, cell areas, points to zones, distances along the Earth | `to_lon_360`, `to_lon_180`, `split_antimeridian`, `parse_bound`, `cell_area_km2`, `grid_cell_areas_km2`, `points_to_zones`, `surface_distance`, `nearest_surface_distance` |
 | `raster` | Windows, mosaics, regridding, zone masks, atomic GeoTIFF writes | `read_window`, `mosaic`, `reproject_to_grid`, `NearestIndexMap`, `resample_masked`, `rasterize_zones`, `write_geotiff_atomic` |
-| `zonal` | Population-weighted sums, sparse zone weights, hierarchy roll-up, nearest facility (surface metres) | `weighted_sums`, `zone_weights`, `rollup_hierarchy`, `collate_blocks`, `nearest_facility_distance`, `share_within` |
+| `zonal` | Population-weighted sums, sparse zone weights and their application to a coarse field, hierarchy roll-up, nearest facility (surface metres) | `weighted_sums`, `zone_weights`, `ZoneCellPairs`, `apply_zone_weights`, `rollup_hierarchy`, `collate_blocks`, `nearest_facility_distance`, `share_within` |
+| `lookup` | Spatial assignments computed once and written to disk: the zone id of every pixel, per block | `build_zone_lookup_block`, `collect_zone_lookup`, `read_zone_lookup_block`, `load_zone_lookup_index`, `load_zone_lookup_summary`, `load_zone_lookup_metadata` |
 
 A raster is the pair `(array, BlockGrid)`: a 2-D numpy array and the grid that places it.
 Repos that keep their rasters as `rasterra.RasterArray` convert at the edge with
 `idd_spatial_analysis.raster.adapters` (install the `rasterra` extra).
 
-`docs/` holds four pages (`conventions`, `frame`, `boundaries`, `memory`) and every subpackage
+`docs/` holds five pages (`conventions`, `frame`, `boundaries`, `lookup`, `memory`) and every subpackage
 has an import-only notebook under `notebooks/vignettes/` that runs on synthetic data in
 seconds. Start with `docs/conventions.md`: it fixes the CRS strings, the north-up grid
 convention, the surface-distance rule, nodata handling and the integer id columns every
@@ -54,7 +57,7 @@ reads it through `idd_spatial_analysis.paths.load_paths()`; every key in
 | `tile_index_root` | The equal-area tile index per resolution | `<root>/<resolution>m/tile_index.parquet`, one row per tile, a `block_key` column |
 | `population_grid_root` | Gridded population rasters | GeoTIFFs on the tile index frame |
 | `raking_root` | Population-model raking inputs | `shapes_<gbd_YYYY>.parquet`, `population_<gbd_YYYY>.parquet`, `gbd-inputs/shapes_<lsae_N>_a2.parquet`, `gbd-inputs/hierarchy_<name>.parquet` |
-| `project_output_root` | This repo's output node | Written only by `idd-spatial materialize-admin-release`; list the key under `write:` to allow it |
+| `project_output_root` | This repo's output node | Written only by the `idd-spatial` commands (the admin release copy and the lookup products under `02-processed_data/`); list the key under `write:` to allow them |
 
 Loaders pin what they read: `AdminRelease(root, "YYYY_MM_DD")` names the release
 explicitly, `load_raking_shapes(root, "gbd_2023")` names the hierarchy. Nothing picks "the
@@ -91,9 +94,20 @@ sums = collate_blocks(partials)
 `boundless=True` pads a block at the raster's edge with NaN so every array has the block's
 shape; `collate_blocks` adds the partial sums of zones that straddle blocks.
 
-The command line has one command, `idd-spatial materialize-admin-release`, which copies a
-release under `project_output_root` for compute nodes that cannot see the archive mount.
-`idd-spatial --help` lists its options.
+The loop above rasterizes the polygons in every block. When the same zones are used again
+and again, build their lookup once and read each block's mask from disk instead:
+`read_zone_lookup_block(directory, block_key)` replaces the `rasterize_zones` line
+(`docs/lookup.md`). `nan_policy` defaults to `"keep_weight"`, under which a missing value
+counts as zero; `"drop_pixel"` leaves such pixels out of both sums.
+
+The command line has three commands; `idd-spatial --help` lists them and their options.
+
+- `idd-spatial materialize-admin-release` copies a release under `project_output_root` for
+  compute nodes that cannot see the archive mount.
+- `idd-spatial build-zone-lookup` writes the zone lookup of the blocks it is given, or of
+  every block a raking hierarchy's shapes intersect.
+- `idd-spatial collect-zone-lookup` checks that every block is there and writes the index, the
+  per-zone summary and the sidecar.
 
 ## Testing
 

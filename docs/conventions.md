@@ -43,6 +43,12 @@ a distance at all. When code elsewhere needs a distance, it uses these, in any C
   are not exact binary fractions.
 - Pixel centres sit half a pixel in from the edges; every nearest lookup and every
   rasterization decides membership by the centre.
+- A field that arrives with coordinate arrays instead of a transform (a NetCDF variable with
+  `longitude` and `latitude`) becomes a grid through `frame.grid_from_coords`, which requires
+  `registration`: `"center"` when a coordinate is the middle of its cell, `"lower_left"` when
+  it is the cell's western and southern edge. There is no default. Reading centre coordinates
+  as edges moves the whole field half a cell north-east, and every fine pixel then takes the
+  value of a neighbouring cell three times out of four.
 - Windows (`BlockGrid.window`) are integer `rasterio.windows.Window`s that cover the
   requested bounds; they are clipped to the grid unless asked not to be.
 
@@ -70,9 +76,12 @@ a distance at all. When code elsewhere needs a distance, it uses these, in any C
   out-of-range values rather than wrapping them.
 - `raster.mosaic` pads pixels no tile covers with NaN (float) or the first tile's nodata;
   integer tiles must declare one.
-- Zonal sums take a required `nan_policy`: `"keep_weight"` leaves a pixel's weight in the
-  denominator when its value is NaN, `"drop_pixel"` removes the pixel from both sums. There is
-  no default because the choice changes the result.
+- Zonal sums take a `nan_policy` for pixels whose value is NaN. The default, `"keep_weight"`,
+  leaves the pixel's weight in the denominator, so a missing value counts as zero in the mean;
+  that is right when missing means zero (a raster padded to a common extent) and matches the
+  forecast-mbp and climate-data aggregations. `"drop_pixel"` removes the pixel from both
+  sums, so the mean is over the pixels that have a value. The choice changes the result
+  wherever values are missing: say which one a pipeline uses.
 
 ## Identifiers and tables
 
